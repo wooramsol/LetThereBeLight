@@ -142,6 +142,9 @@
       <button id="regReset">등록 지우기</button>
     </div>
     <div class="row">
+      <button id="calib">📍 빛 위치 직접 맞추기</button>
+    </div>
+    <div class="row">
       <button id="snap">📸 사진 저장</button>
       <button id="toggle">💡 켜기/끄기</button>
     </div>
@@ -395,8 +398,8 @@ function grabFrame() {
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
 let embedder = null;
-const REG_KEY = "bulb-light-reg-v3";
-const reg = { pos: [], neg: [], ratio: 1.6, tpl: [] };   // tpl = 필라멘트 주변 모양 (정밀 위치 맞추기용)   // pos = 전구, neg = 배경(자동), ratio = 전구 크기 / 손 크기
+const REG_KEY = "bulb-light-reg-v4";
+const reg = { pos: [], neg: [], ratio: 1.6, tpl: [], corr: { a: 0, b: 0 } };   // corr = 클릭으로 맞춘 보정값   // tpl = 필라멘트 주변 모양 (정밀 위치 맞추기용)   // pos = 전구, neg = 배경(자동), ratio = 전구 크기 / 손 크기
 
 // 화면 좌표 (x, y: 거울 기준 0~1, s: 화면 높이 대비 크기) 의 정사각형을 잘라 임베딩
 function embedWin(x, y, s) {
@@ -409,7 +412,7 @@ function embedWin(x, y, s) {
 }
 /* 필라멘트 정밀 맞추기: 전구 창을 64x64 흑백으로 줄인 뒤,
    등록 때 저장한 필라멘트 주변 24x24 모양을 이리저리 대 보며 가장 잘 맞는 자리를 찾음 */
-const NCC_N = 64, TPL = 24, NCC_R = 10, NCC_TH = 0.45;
+const NCC_N = 64, TPL = 24, NCC_R = 8, NCC_TH = 0.4;
 const nccC = document.createElement("canvas"); nccC.width = nccC.height = NCC_N;
 const nctx = nccC.getContext("2d", { willReadFrequently: true });
 function grayWin(x, y, s) {
@@ -419,7 +422,15 @@ function grayWin(x, y, s) {
   nctx.drawImage(frameC, cx - size / 2, cy - size / 2, size, size, 0, 0, NCC_N, NCC_N);
   const d = nctx.getImageData(0, 0, NCC_N, NCC_N).data, g = new Float32Array(NCC_N * NCC_N);
   for (let i = 0; i < g.length; i++) g[i] = d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11;
-  return g;
+  // 밝기 대신 윤곽선(필라멘트 선, 유리 테두리, 소켓)으로 비교 → 유리 너머 배경 영향이 줄어듦
+  const e = new Float32Array(NCC_N * NCC_N);
+  for (let y = 1; y < NCC_N - 1; y++) for (let x = 1; x < NCC_N - 1; x++) {
+    const i = y * NCC_N + x;
+    const gx = g[i + 1 - NCC_N] + 2 * g[i + 1] + g[i + 1 + NCC_N] - g[i - 1 - NCC_N] - 2 * g[i - 1] - g[i - 1 + NCC_N];
+    const gy = g[i + NCC_N - 1] + 2 * g[i + NCC_N] + g[i + NCC_N + 1] - g[i - NCC_N - 1] - 2 * g[i - NCC_N] - g[i - NCC_N + 1];
+    e[i] = Math.sqrt(gx * gx + gy * gy);
+  }
+  return e;
 }
 function makeTpl(g) {
   const t = new Float32Array(TPL * TPL), o = (NCC_N - TPL) >> 1; let m = 0;
@@ -456,15 +467,22 @@ function uvToHand(H, p) {
 }
 function refineFilament(H, now) {
   if (!reg.tpl.length || !H.found) return;
-  const s = H.found.k * H.Lp;
   const c = handToUV(H, H.found.a, H.found.b);
-  const r = nccSearch(grayWin(c.x, c.y, s), reg.tpl);
-  H.ncc = r.score;
-  if (r.score < NCC_TH) return;
+  // 크기 3단계로 대 보고 가장 잘 맞는 크기·위치를 고름 → 전구 크기도 같이 바로잡힘
+  let best = null;
+  for (const f of [0.8, 1, 1.25]) {
+    const s = H.found.k * H.Lp * f;
+    const r = nccSearch(grayWin(c.x, c.y, s), reg.tpl);
+    const sc = r.score + (f === 1 ? 0.01 : 0);
+    if (!best || sc > best.sc) best = { score: r.score, dx: r.dx, dy: r.dy, sc, f, s };
+  }
+  H.ncc = best.score;
+  if (best.score < NCC_TH) return;
   // 잘라낸 그림은 거울 반대라 x 방향을 뒤집어 줌
-  const p = { x: c.x - (r.dx / NCC_N) * s / aspect, y: c.y + (r.dy / NCC_N) * s };
+  const p = { x: c.x - (best.dx / NCC_N) * best.s / aspect, y: c.y + (best.dy / NCC_N) * best.s };
   const h = uvToHand(H, p), t = 0.55;
   H.found.a += (h.a - H.found.a) * t; H.found.b += (h.b - H.found.b) * t;
+  H.found.k *= 1 + (best.f - 1) * 0.5;
   H.nccT = now;
 }
 
@@ -496,13 +514,13 @@ function b64ToF32(o) {
   return out;
 }
 function saveReg() {
-  try { localStorage.setItem(REG_KEY, JSON.stringify({ pos: f32ToB64(reg.pos), neg: f32ToB64(reg.neg), ratio: reg.ratio, tpl: reg.tpl.length ? f32ToB64(reg.tpl) : null })); } catch (e) {}
+  try { localStorage.setItem(REG_KEY, JSON.stringify({ pos: f32ToB64(reg.pos), neg: f32ToB64(reg.neg), ratio: reg.ratio, tpl: reg.tpl.length ? f32ToB64(reg.tpl) : null, corr: reg.corr })); } catch (e) {}
 }
 function loadReg() {
   try {
-    localStorage.removeItem("bulb-light-reg-v1"); localStorage.removeItem("bulb-light-reg-v2");   // 예전 방식 데이터는 지움
+    localStorage.removeItem("bulb-light-reg-v1"); localStorage.removeItem("bulb-light-reg-v2"); localStorage.removeItem("bulb-light-reg-v3");   // 예전 방식 데이터는 지움
     const o = JSON.parse(localStorage.getItem(REG_KEY) || "null");
-    if (o && o.pos && o.neg) { reg.pos = b64ToF32(o.pos); reg.neg = b64ToF32(o.neg); reg.ratio = o.ratio || 1.6; reg.tpl = o.tpl ? b64ToF32(o.tpl) : []; }
+    if (o && o.pos && o.neg) { reg.pos = b64ToF32(o.pos); reg.neg = b64ToF32(o.neg); reg.ratio = o.ratio || 1.6; reg.tpl = o.tpl ? b64ToF32(o.tpl) : []; reg.corr = o.corr || { a: 0, b: 0 }; }
   } catch (e) { reg.pos = []; reg.neg = []; }
 }
 loadReg();
@@ -525,7 +543,7 @@ function setPhase(ph) {
   if (ph === "done") {
     $("reg").hidden = true; RS.phase = null;
     if (RS.tmpPos.length >= 10 && RS.tmpNeg.length >= 10) {
-      reg.pos = RS.tmpPos; reg.neg = RS.tmpNeg;
+      reg.pos = RS.tmpPos; reg.neg = RS.tmpNeg; reg.corr = { a: 0, b: 0 };
       if (RS.ratios.length >= 3) { const r = RS.ratios.sort((a, b) => a - b); reg.ratio = r[r.length >> 1]; }
       // 필라멘트 모양은 고르게 8장만
       const T = RS.tmpTpl; reg.tpl = [];
@@ -622,7 +640,7 @@ function finishSearch(H) {
     const nf = { a: wa / w, b: wb / w, k: wk / w };
     if (H.found && H.mode === "local") {
       const t = 0.6, locked = H.nccT && performance.now() - H.nccT < 400;   // 필라멘트에 맞춰져 있으면 위치는 그대로
-      H.found = { a: locked ? H.found.a : H.found.a + (nf.a - H.found.a) * t, b: locked ? H.found.b : H.found.b + (nf.b - H.found.b) * t, k: H.found.k + (nf.k - H.found.k) * t };
+      H.found = { a: locked ? H.found.a : H.found.a + (nf.a - H.found.a) * t, b: locked ? H.found.b : H.found.b + (nf.b - H.found.b) * t, k: locked ? H.found.k : H.found.k + (nf.k - H.found.k) * t };
     } else H.found = nf;
     H.hasBulb = true; H.miss = 0; H.mode = "local";
   } else {
@@ -684,7 +702,7 @@ function stepHands(now, dt) {
     if (H.seen && now - H.lastSeen > 250) { H.seen = false; H.queue = []; H.results = []; }
     // 찾은 전구 자리를 손과 함께 움직임 (검색 사이에도 부드럽게 따라감)
     if (H.found) {
-      const c = handToUV(H, H.found.a, H.found.b);
+      const c = handToUV(H, H.found.a + reg.corr.a * H.found.k, H.found.b + reg.corr.b * H.found.k);   // 클릭 보정 반영
       H.bulbEst.x = c.x; H.bulbEst.y = c.y;
       H.bulbR = H.found.k * H.Lp * 0.24;
     }
@@ -820,6 +838,7 @@ function updateStatus() {
   const anyOn = vis.some(H => H.on);
   if (!handLM || !embedder) msg = "인식 모델 불러오는 중…";
   else if (RS.phase) msg = "전구 등록 중…";
+  else if (calibrating) msg = "📍 전구를 든 채로, 화면에서 <b>실제 필라멘트</b>를 클릭하세요";
   else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
   else if (!isRegistered()) msg = "<b>내 전구</b>를 등록하면 전구를 들었을 때 켜져요";
   else if (anyOn) msg = "<b>💡 켜짐</b>";
@@ -893,7 +912,30 @@ function toggleManual() {
   ui.mode.value = "click"; manual.on = !manual.on; updateStatus();
 }
 $("toggle").addEventListener("click", toggleManual);
-$("stage").addEventListener("click", () => { if (ui.mode.value === "click") { manual.on = !manual.on; updateStatus(); } });
+let calibrating = false;
+// 화면 클릭 위치 → 영상 좌표 (화면을 꽉 채우도록 잘려 보이는 것까지 고려)
+function screenToUV(ev) {
+  const r = glc.getBoundingClientRect();
+  const sc = Math.max(r.width / glc.width, r.height / glc.height);
+  const dw = glc.width * sc, dh = glc.height * sc;
+  return { x: (ev.clientX - r.left - (r.width - dw) / 2) / dw, y: (ev.clientY - r.top - (r.height - dh) / 2) / dh };
+}
+$("calib").addEventListener("click", () => {
+  if (!isRegistered()) { alert("먼저 내 전구를 등록해 주세요."); return; }
+  calibrating = true; updateStatus();
+});
+$("stage").addEventListener("click", (ev) => {
+  if (calibrating) {
+    calibrating = false;
+    const H = visibleHands().find(h => h.found && h.hasBulb);
+    if (!H) { alert("전구를 들어서 불이 켜진 상태에서 다시 눌러 주세요."); updateStatus(); return; }
+    const h = uvToHand(H, screenToUV(ev));
+    reg.corr = { a: (h.a - H.found.a) / H.found.k, b: (h.b - H.found.b) / H.found.k };
+    saveReg(); updateStatus();
+    return;
+  }
+  if (ui.mode.value === "click") { manual.on = !manual.on; updateStatus(); }
+});
 addEventListener("keydown", (e) => { if (e.code === "Space" && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT") { e.preventDefault(); toggleManual(); } });
 ui.mode.addEventListener("change", updateStatus);
 
