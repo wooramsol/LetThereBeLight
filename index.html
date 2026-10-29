@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>전구 켜기 · Bulb Light</title>
+<meta name="description" content="웹캠 앞에서 전구를 들면 불이 켜지고, 손과 방이 자연스럽게 밝아지는 인터랙티브 조명 효과">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='26' r='18' fill='%23ffd36b'/%3E%3Crect x='24' y='42' width='16' height='12' rx='3' fill='%23999'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #07070a; --panel: rgba(18,18,24,.82); --line: rgba(255,255,255,.12);
+    --text: #f2efe8; --muted: #a29e95; --accent: #ffc861;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", system-ui, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas, #stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #video { opacity: 0; pointer-events: none; }
+  #overlay { pointer-events: none; }
+
+  /* 시작 화면 */
+  #intro { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
+    background: radial-gradient(ellipse at 50% 38%, rgba(255,190,90,.16), transparent 60%), var(--bg); z-index: 10; }
+  #intro .box { max-width: 440px; text-align: center; }
+  #intro .bulb { width: 84px; height: 84px; margin: 0 auto 18px; border-radius: 50%;
+    background: radial-gradient(circle at 50% 45%, #fff6dc 0 18%, #ffd36b 40%, rgba(255,170,60,.0) 72%);
+    animation: breathe 2.6s ease-in-out infinite; }
+  @keyframes breathe { 50% { transform: scale(1.08); filter: brightness(1.25); } }
+  #intro h1 { font-size: 30px; margin: 0 0 10px; letter-spacing: -.02em; }
+  #intro p { color: var(--muted); line-height: 1.65; margin: 0 0 8px; font-size: 15px; }
+  #intro ul { text-align: left; color: var(--muted); font-size: 14px; line-height: 1.7; padding-left: 20px; margin: 16px 0 22px; }
+  button.primary { appearance: none; border: 0; background: var(--accent); color: #1d1406; font-weight: 700;
+    font-size: 16px; padding: 14px 28px; border-radius: 999px; cursor: pointer; font-family: inherit; }
+  button.primary:disabled { opacity: .6; cursor: wait; }
+  #err { color: #ff8a7a; font-size: 14px; margin-top: 14px; min-height: 1em; }
+
+  /* 상태 표시 */
+  #status { position: fixed; top: max(14px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--line); padding: 8px 14px; border-radius: 999px;
+    font-size: 13px; color: var(--muted); z-index: 5; backdrop-filter: blur(10px); white-space: nowrap; }
+  #status b { color: var(--accent); font-weight: 600; }
+
+  /* 컨트롤 패널 */
+  #panel { position: fixed; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); width: 280px; max-width: calc(100vw - 32px);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px; z-index: 5;
+    backdrop-filter: blur(12px); font-size: 13px; }
+  #panel summary { list-style: none; cursor: pointer; padding: 12px 16px; font-weight: 600; display: flex; justify-content: space-between; }
+  #panel summary::-webkit-details-marker { display: none; }
+  #panel summary::after { content: "▾"; color: var(--muted); }
+  #panel[open] summary::after { content: "▴"; }
+  #panel .body { padding: 0 16px 14px; display: grid; gap: 11px; }
+  #panel label { display: grid; gap: 5px; color: var(--muted); }
+  #panel label span { display: flex; justify-content: space-between; }
+  #panel label span i { font-style: normal; color: var(--text); }
+  #panel input[type=range] { width: 100%; accent-color: var(--accent); }
+  #panel select { width: 100%; background: #111; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px; font-family: inherit; }
+  #panel .check { display: flex; align-items: center; gap: 8px; grid-template-columns: none; cursor: pointer; }
+  #panel .check input { accent-color: var(--accent); }
+  #panel .row { display: flex; gap: 8px; }
+  #panel .row button { flex: 1; appearance: none; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text);
+    border-radius: 10px; padding: 9px 6px; cursor: pointer; font-family: inherit; font-size: 13px; }
+  #panel .row button:hover { background: rgba(255,255,255,.12); }
+  @media (max-width: 520px) { #panel { left: 16px; right: 16px; width: auto; } }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="gl"></canvas>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="intro">
+  <div class="box">
+    <div class="bulb"></div>
+    <h1>전구 켜기</h1>
+    <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
+    <ul>
+      <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
+      <li>전구가 없으면 주먹만 쥐어도 돼요. 가상 전구가 나타나요.</li>
+      <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
+    </ul>
+    <button class="primary" id="start">카메라 켜고 시작</button>
+    <div id="err"></div>
+  </div>
+</div>
+
+<div id="status" hidden>준비 중…</div>
+
+<details id="panel" hidden open>
+  <summary>조명 설정</summary>
+  <div class="body">
+    <label>켜는 방식
+      <select id="mode">
+        <option value="hold">전구를 들고 있으면 켜짐</option>
+        <option value="raise">손을 위로 들면 켜짐</option>
+        <option value="click">클릭 / 스페이스바로 켜고 끄기</option>
+      </select>
+    </label>
+    <label><span>전구 밝기 <i id="vIntensity"></i></span><input type="range" id="intensity" min="0.3" max="2.5" step="0.05" value="1.2"></label>
+    <label><span>방 어둡기 <i id="vDark"></i></span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"></label>
+    <label><span>색온도 <i id="vKelvin"></i></span><input type="range" id="kelvin" min="1800" max="6000" step="100" value="2700"></label>
+    <label><span>배경 그림자 <i id="vShadow"></i></span><input type="range" id="shadow" min="0" max="1" step="0.05" value="0.7"></label>
+    <label class="check"><input type="checkbox" id="virtual" checked> 가상 전구 그리기 (전구가 없을 때)</label>
+    <label class="check"><input type="checkbox" id="refine" checked> 실제 전구 위치 보정 (밝은 물체 추적)</label>
+    <label class="check"><input type="checkbox" id="sound" checked> 딸깍 소리</label>
+    <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
+    <div class="row">
+      <button id="snap">📸 사진 저장</button>
+      <button id="toggle">💡 켜기/끄기</button>
+    </div>
+  </div>
+</details>
+
+<script type="x-shader/x-vertex" id="vs">
+#version 300 es
+in vec2 p; out vec2 vUv;
+void main(){ vUv = vec2((p.x+1.0)*0.5, (1.0-p.y)*0.5); gl_Position = vec4(p,0.0,1.0); }
+</script>
+<script type="x-shader/x-fragment" id="fs">
+#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 outColor;
+uniform sampler2D uVideo, uMask;
+uniform float uAspect, uI, uAmb, uShadow, uVirtual, uR, uHasMask, uDebug, uTime;
+uniform vec2 uL, uDir;
+uniform vec3 uWarm;
+uniform vec2 uHand[21];
+uniform int uHandN;
+
+vec2 mir(vec2 uv){ return vec2(1.0 - uv.x, uv.y); }       // 거울 모드
+float person(vec2 uv){ return uHasMask > 0.5 ? texture(uMask, mir(uv)).r : 0.0; }
+vec2 A(vec2 uv){ return vec2(uv.x * uAspect, uv.y); }     // 화면비 보정 좌표
+
+void main(){
+  vec2 uv = vUv;
+  vec3 srgb = texture(uVideo, mir(uv)).rgb;
+  vec3 lin = pow(srgb, vec3(2.2));
+
+  float pm = smoothstep(0.25, 0.75, person(uv));
+  float d  = distance(A(uv), A(uL));
+  float R  = max(uR, 0.02);
+
+  // 1) 거리 감쇠: 사람(가까움)은 강하고 좁게, 배경(멀리)은 약하고 넓게
+  float Ip = 1.0 / (1.0 + pow(d / (R * 3.2), 2.0));
+  float Ib = 0.55 / (1.0 + pow(d / (R * 6.5), 2.0));
+
+  // 2) 배경에 드리우는 사람 그림자: 전구 방향으로 마스크를 거슬러 샘플링
+  float sh = 0.0;
+  for (int i = 1; i <= 8; i++) {
+    float k = 0.035 * float(i);
+    sh += smoothstep(0.3, 0.8, person(uv + (uL - uv) * k));
+  }
+  sh = (sh / 8.0) * uShadow * (1.0 - pm);
+  float L = mix(Ib * (1.0 - 0.9 * sh), Ip, pm);
+
+  // 3) 전구를 쥔 손: 더 밝게 + 빛이 비쳐 붉게 물드는 효과
+  float dh = 10.0;
+  for (int i = 0; i < 21; i++) { if (i >= uHandN) break; dh = min(dh, distance(A(uv), A(uHand[i]))); }
+  float hand = exp(-pow(dh / (R * 0.9), 2.0)) * max(pm, 0.35);
+  float nearBulb = exp(-pow(d / (R * 2.2), 2.0));
+  vec3 sss = vec3(1.0, 0.28, 0.10) * hand * nearBulb * 1.4;
+
+  // 흔들리는 빛
+  float flick = 1.0 + 0.025 * sin(uTime * 23.0) * sin(uTime * 7.3);
+  float I = uI * flick;
+
+  vec3 light = uWarm * (L * 2.6 + hand * 0.9) * I;
+  vec3 col = lin * (uAmb + light) + lin * sss * I;
+
+  // 4) 전구 자체의 빛번짐
+  vec2 q = A(uv) - A(uL);
+  vec2 dir = normalize(uDir + vec2(1e-5));
+  vec2 per = vec2(-dir.y, dir.x);
+  float al = dot(q, dir), ac = dot(q, per);
+
+  if (uVirtual > 0.5) {
+    // 유리구 + 목 + 소켓
+    float glass = length(q) - R;
+    float neckW = mix(R * 0.42, R * 0.62, smoothstep(-R * 1.5, -R * 0.6, al));
+    float neck  = max(abs(ac) - neckW, max(-al - R * 1.5, al + R * 0.4));
+    float shape = min(glass, neck);
+    float gm = smoothstep(0.004, -0.004, shape);
+    float base = smoothstep(0.004, -0.004, max(abs(ac) - R * 0.43, max(-al - R * 2.1, al + R * 1.35)));
+    // 꺼진 유리
+    vec3 off = vec3(0.78, 0.82, 0.86);
+    float rim = smoothstep(-R * 0.25, 0.0, glass) * gm;
+    float spec = exp(-pow(length(q - (-dir * 0.0 + per * 0.0) - (dir * R * 0.45 + per * R * 0.4)) / (R * 0.18), 2.0));
+    vec3 glassCol = lin * (uAmb + light) * 0.6 + off * (0.08 + rim * 0.35) + spec * 0.5;
+    // 켜진 필라멘트/코어
+    float fil = exp(-pow(abs(ac) / (R * 0.06), 2.0)) * exp(-pow((al - R * 0.05) / (R * 0.35), 2.0));
+    vec3 lit = uWarm * (1.6 + 2.5 * exp(-pow(length(q) / R, 2.0))) + vec3(1.0, 0.95, 0.85) * fil * 4.0;
+    glassCol = mix(glassCol, lit, clamp(I, 0.0, 1.0));
+    col = mix(col, glassCol, gm);
+    // 금속 소켓
+    float ridges = 0.6 + 0.4 * sin(al / R * 38.0);
+    vec3 metal = vec3(0.55, 0.53, 0.5) * ridges * (0.15 + 0.85 * clamp(uAmb + I * 0.8, 0.0, 1.5));
+    col = mix(col, metal, base * (1.0 - gm));
+  }
+
+  float g1 = exp(-pow(d / (R * 0.7), 2.0));
+  float g2 = exp(-pow(d / (R * 2.4), 2.0));
+  float g3 = exp(-pow(d / (R * 7.0), 2.0));
+  float streak = exp(-pow(ac / (R * 0.12), 2.0)) * exp(-pow(al / (R * 6.0), 2.0));
+  col += (vec3(1.0, 0.97, 0.9) * g1 * 1.8 + uWarm * g2 * 0.7 + uWarm * g3 * 0.18 + uWarm * streak * 0.08) * I;
+
+  // 톤매핑 + 감마
+  col = col * (1.0 + col / 6.0) / (1.0 + col);
+  col = pow(col, vec3(1.0 / 2.2));
+
+  if (uDebug > 0.5) col = mix(col, vec3(0.1, 0.6, 1.0), pm * 0.35);
+  outColor = vec4(col, 1.0);
+}
+</script>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker, ImageSegmenter }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), glc = $("gl"), ovc = $("overlay");
+const statusEl = $("status");
+
+/* ---------------- 설정 ---------------- */
+const ui = {};
+for (const id of ["mode","intensity","dark","kelvin","shadow","virtual","refine","sound","debug"]) ui[id] = $(id);
+function readUI() {
+  $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
+  $("vDark").textContent = Math.round(ui.dark.value * 100) + "%";
+  $("vKelvin").textContent = ui.kelvin.value + "K";
+  $("vShadow").textContent = Math.round(ui.shadow.value * 100) + "%";
+}
+document.querySelectorAll("#panel input, #panel select").forEach(el => el.addEventListener("input", readUI));
+readUI();
+
+// 색온도(K) → RGB (Tanner Helland 근사)
+function kelvinToRGB(k) {
+  const t = k / 100; let r, g, b;
+  r = t <= 66 ? 255 : 329.7 * Math.pow(t - 60, -0.1332);
+  g = t <= 66 ? 99.47 * Math.log(t) - 161.12 : 288.12 * Math.pow(t - 60, -0.0755);
+  b = t >= 66 ? 255 : (t <= 19 ? 0 : 138.52 * Math.log(t - 10) - 305.04);
+  const c = v => Math.min(1, Math.max(0, v / 255));
+  return [c(r), c(g), c(b)];
+}
+
+/* ---------------- WebGL ---------------- */
+const gl = glc.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false });
+if (!gl) { $("err").textContent = "이 브라우저는 WebGL2를 지원하지 않아요. 크롬이나 사파리 최신 버전에서 열어 주세요."; }
+
+const VS = document.getElementById("vs").textContent.trim();
+const FS = document.getElementById("fs").textContent.trim();
+
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+let prog, U = {}, texVideo, texMask;
+function initGL() {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p");
+  gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  for (const n of ["uVideo","uMask","uAspect","uI","uAmb","uShadow","uVirtual","uR","uHasMask","uDebug","uTime","uL","uDir","uWarm","uHand","uHandN"])
+    U[n] = gl.getUniformLocation(prog, n);
+  const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
+  texVideo = mk(); texMask = mk();
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([0]));
+  gl.uniform1i(U.uVideo, 0); gl.uniform1i(U.uMask, 1);
+}
+
+/* ---------------- 상태 ---------------- */
+const S = {
+  hasHand: false, hand: [], bulb: { x: 0.5, y: 0.4 }, dir: { x: 0, y: -1 }, R: 0.07,
+  on: false, manualOn: false, I: 0, flickerT: -1, lastSeen: 0,
+  mask: null, maskW: 0, maskH: 0, hasMask: false,
+};
+let handLM = null, segm = null, aspect = 16 / 9;
+
+/* ---------------- 소리 ---------------- */
+let actx = null;
+function click(on) {
+  if (!ui.sound.checked) return;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const t = actx.currentTime, len = 0.04;
+    const b = actx.createBuffer(1, actx.sampleRate * len, actx.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 6);
+    const src = actx.createBufferSource(); src.buffer = b;
+    const f = actx.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = on ? 2600 : 1700; f.Q.value = 1.4;
+    const g = actx.createGain(); g.gain.value = 0.9;
+    src.connect(f).connect(g).connect(actx.destination); src.start(t);
+  } catch (e) {}
+}
+
+/* ---------------- 밝은 물체 보정 ---------------- */
+const small = document.createElement("canvas"); small.width = 96; small.height = 54;
+const sctx = small.getContext("2d", { willReadFrequently: true });
+function refineBright(est, R) {
+  // 거울 좌표 → 원본 좌표
+  sctx.drawImage(video, 0, 0, small.width, small.height);
+  const { data } = sctx.getImageData(0, 0, small.width, small.height);
+  const W = small.width, H = small.height;
+  const cx = (1 - est.x) * W, cy = est.y * H, rad = R * 2.2 * H;
+  let peak = 0, sum = 0, n = 0;
+  const x0 = Math.max(0, cx - rad | 0), x1 = Math.min(W - 1, cx + rad | 0);
+  const y0 = Math.max(0, cy - rad | 0), y1 = Math.min(H - 1, cy + rad | 0);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = (y * W + x) * 4, l = (0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2]) / 255;
+    if (l > peak) peak = l; sum += l; n++;
+  }
+  if (!n) return null;
+  const avg = sum / n;
+  if (peak < 0.8 || peak - avg < 0.25) return null;
+  let wx = 0, wy = 0, w = 0;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = (y * W + x) * 4, l = (0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2]) / 255;
+    if (l > peak * 0.9) { wx += x; wy += y; w++; }
+  }
+  if (w < 2) return null;
+  return { x: 1 - (wx / w + 0.5) / W, y: (wy / w + 0.5) / H };
+}
+
+/* ---------------- 손 → 전구 위치 ---------------- */
+function updateFromHand(lms, now) {
+  // 거울 좌표로 변환, 화면비 보정 공간에서 계산
+  const P = lms.map(p => ({ x: 1 - p.x, y: p.y }));
+  S.hand = P;
+  const ax = v => ({ x: v.x * aspect, y: v.y });
+  const w = ax(P[0]), m = ax(P[9]);
+  const palm = [0, 5, 9, 13, 17].map(i => ax(P[i])).reduce((a, b) => ({ x: a.x + b.x / 5, y: a.y + b.y / 5 }), { x: 0, y: 0 });
+  let dx = m.x - w.x, dy = m.y - w.y; const Lp = Math.hypot(dx, dy) || 0.1; dx /= Lp; dy /= Lp;
+  // 주먹 쥔 손 위쪽(손가락 마디 방향)에 전구가 있다고 가정
+  const R = Lp * 0.62;
+  let bx = (palm.x + dx * Lp * 1.25) / aspect, by = palm.y + dy * Lp * 1.25;
+  let est = { x: bx, y: by };
+  if (ui.refine.checked) {
+    const r = refineBright(est, R);
+    if (r) est = { x: est.x * 0.35 + r.x * 0.65, y: est.y * 0.35 + r.y * 0.65 };
+  }
+  const k = S.hasHand ? 0.45 : 1;   // 부드럽게 따라가기
+  S.bulb.x += (est.x - S.bulb.x) * k; S.bulb.y += (est.y - S.bulb.y) * k;
+  S.dir.x += (dx - S.dir.x) * k; S.dir.y += (dy - S.dir.y) * k;
+  S.R += (R - S.R) * k;
+  S.hasHand = true; S.lastSeen = now;
+}
+
+/* ---------------- 켜짐 판단 + 깜빡임 ---------------- */
+const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];  // 켜질 때 형광등처럼 파르르
+function targetOn() {
+  const mode = ui.mode.value;
+  if (mode === "click") return S.manualOn;
+  if (!S.hasHand) return false;
+  if (mode === "raise") return S.bulb.y < 0.42;
+  return true;
+}
+function stepIntensity(now, dt) {
+  const want = targetOn();
+  if (want && !S.on) { S.on = true; S.flickerT = now; click(true); }
+  if (!want && S.on) { S.on = false; S.flickerT = -1; click(false); }
+  const max = +ui.intensity.value;
+  let target = S.on ? max : 0;
+  if (S.on && S.flickerT >= 0) {
+    const e = (now - S.flickerT) / 70 | 0;
+    if (e < FLICKER.length) target = FLICKER[e] * max; else S.flickerT = -1;
+    S.I = target; return;
+  }
+  const rate = S.on ? 10 : 7;
+  S.I += (target - S.I) * Math.min(1, dt * rate);
+}
+
+/* ---------------- 디버그 오버레이 ---------------- */
+const octx = ovc.getContext("2d");
+function drawOverlay() {
+  octx.clearRect(0, 0, ovc.width, ovc.height);
+  if (!ui.debug.checked) return;
+  const W = ovc.width, H = ovc.height;
+  octx.fillStyle = "#4cf";
+  for (const p of S.hand) { octx.beginPath(); octx.arc(p.x * W, p.y * H, 4, 0, 7); octx.fill(); }
+  octx.strokeStyle = "#ffc861"; octx.lineWidth = 2;
+  octx.beginPath(); octx.arc(S.bulb.x * W, S.bulb.y * H, S.R * H, 0, 7); octx.stroke();
+}
+
+/* ---------------- 메인 루프 ---------------- */
+let frame = 0, lastT = performance.now(), lastVideoTime = -1, fpsAcc = 0, fpsN = 0, fps = 0;
+function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  if (video.readyState < 2) return;
+
+  if (video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    if (handLM) {
+      const r = handLM.detectForVideo(video, now);
+      if (r.landmarks && r.landmarks.length) updateFromHand(r.landmarks[0], now);
+      else if (now - S.lastSeen > 250) { S.hasHand = false; S.hand = []; }
+    }
+    if (segm && frame % 2 === 0) {
+      segm.segmentForVideo(video, now, (res) => {
+        const masks = res.confidenceMasks; if (!masks || !masks.length) return;
+        const mk = masks[masks.length - 1];
+        const f = mk.getAsFloat32Array(), w = mk.width, h = mk.height;
+        if (!S.mask || S.mask.length !== w * h) { S.mask = new Uint8Array(w * h); S.maskW = w; S.maskH = h; }
+        const M = S.mask;
+        for (let i = 0; i < f.length; i++) M[i] = (M[i] * 0.4 + f[i] * 255 * 0.6) | 0;  // 시간축 스무딩
+        S.hasMask = true; S.maskDirty = true;
+      });
+    }
+    frame++;
+  }
+  stepIntensity(now, dt);
+
+  // 렌더
+  gl.viewport(0, 0, glc.width, glc.height);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texVideo);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texMask);
+  if (S.maskDirty) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S.maskW, S.maskH, 0, gl.RED, gl.UNSIGNED_BYTE, S.mask); S.maskDirty = false; }
+
+  const dark = +ui.dark.value;
+  gl.uniform1f(U.uAspect, aspect);
+  gl.uniform1f(U.uI, S.I);
+  gl.uniform1f(U.uAmb, Math.pow(1 - dark, 1.6));
+  gl.uniform1f(U.uShadow, +ui.shadow.value);
+  gl.uniform1f(U.uVirtual, ui.virtual.checked && (S.hasHand || ui.mode.value === "click") ? 1 : 0);
+  gl.uniform1f(U.uR, S.R);
+  gl.uniform1f(U.uHasMask, S.hasMask ? 1 : 0);
+  gl.uniform1f(U.uDebug, ui.debug.checked ? 1 : 0);
+  gl.uniform1f(U.uTime, now / 1000);
+  gl.uniform2f(U.uL, S.bulb.x, S.bulb.y);
+  gl.uniform2f(U.uDir, S.dir.x, S.dir.y);
+  gl.uniform3fv(U.uWarm, kelvinToRGB(+ui.kelvin.value));
+  const hp = new Float32Array(42);
+  S.hand.forEach((p, i) => { hp[i * 2] = p.x; hp[i * 2 + 1] = p.y; });
+  gl.uniform2fv(U.uHand, hp);
+  gl.uniform1i(U.uHandN, S.hand.length);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  drawOverlay();
+
+  fpsAcc += dt; fpsN++;
+  if (fpsAcc > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; updateStatus(); }
+}
+
+function updateStatus() {
+  let msg;
+  if (!handLM) msg = "인식 모델 불러오는 중…";
+  else if (ui.mode.value === "click") msg = S.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
+  else if (!S.hasHand) msg = "전구를 들거나 주먹을 쥐어 카메라에 보여 주세요";
+  else if (ui.mode.value === "raise" && !S.on) msg = "손을 위로 들어 올리면 켜져요";
+  else msg = "<b>💡 켜짐</b>";
+  statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
+}
+
+/* ---------------- 시작 ---------------- */
+async function loadModels() {
+  const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const mk = async (Cls, opts) => {
+    try { return await Cls.createFromOptions(fs, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "GPU" } }); }
+    catch (e) { return await Cls.createFromOptions(fs, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "CPU" } }); }
+  };
+  const [h, s] = await Promise.all([
+    mk(HandLandmarker, {
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
+      runningMode: "VIDEO", numHands: 1, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+    }),
+    mk(ImageSegmenter, {
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.task" },
+      runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
+    }),
+  ]);
+  handLM = h; segm = s;
+  updateStatus();
+}
+
+function resize() {
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  aspect = vw / vh;
+  glc.width = ovc.width = vw; glc.height = ovc.height = vh;
+}
+
+$("start").addEventListener("click", async () => {
+  const btn = $("start"); btn.disabled = true; btn.textContent = "카메라 연결 중…"; $("err").textContent = "";
+  try {
+    initGL();
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
+    });
+    video.srcObject = stream; await video.play();
+    resize(); video.addEventListener("resize", resize);
+    $("intro").hidden = true; $("intro").style.display = "none";
+    statusEl.hidden = false; $("panel").hidden = false;
+    if (innerWidth < 520) $("panel").open = false;
+    requestAnimationFrame(loop);
+    updateStatus();
+    loadModels().catch(e => { console.error(e); statusEl.textContent = "인식 모델을 불러오지 못했어요. 새로고침해 주세요."; });
+  } catch (e) {
+    console.error(e);
+    btn.disabled = false; btn.textContent = "다시 시도";
+    $("err").textContent = e && e.name === "NotAllowedError"
+      ? "카메라 권한이 거부됐어요. 주소창의 카메라 아이콘에서 허용해 주세요."
+      : "카메라를 켤 수 없어요: " + (e.message || e);
+  }
+});
+
+function toggleManual() {
+  ui.mode.value = "click"; S.manualOn = !S.manualOn; updateStatus();
+}
+$("toggle").addEventListener("click", toggleManual);
+$("stage").addEventListener("click", () => { if (ui.mode.value === "click") { S.manualOn = !S.manualOn; updateStatus(); } });
+addEventListener("keydown", (e) => { if (e.code === "Space" && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT") { e.preventDefault(); toggleManual(); } });
+ui.mode.addEventListener("change", () => {
+  if (ui.mode.value === "click" && !S.hasHand) { S.bulb = { x: 0.5, y: 0.38 }; S.R = 0.07; S.dir = { x: 0, y: -1 }; }
+  updateStatus();
+});
+
+$("snap").addEventListener("click", () => {
+  glc.toBlob((b) => {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(b);
+    a.download = "bulb-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".png"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }, "image/png");
+});
+</script>
+</body>
+</html>
