@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -14,6 +14,9 @@
   #video { opacity: 0; pointer-events: none; }
   #panel { position: fixed; top: 8px; left: 8px; padding: 6px 8px; background: rgba(0,0,0,.6); display: grid; gap: 4px; }
   #panel label { display: grid; grid-template-columns: 64px 120px 34px; align-items: center; gap: 6px; }
+  #panel label.ck { grid-template-columns: 14px auto; gap: 4px; cursor: pointer; }
+  #panel label.ck input { width: auto; }
+  #overlay { pointer-events: none; }
   #panel span { color: var(--dim); }
   #panel i { font-style: normal; text-align: right; }
   #panel input { width: 100%; margin: 0; accent-color: #aaa; }
@@ -24,11 +27,14 @@
 <div id="stage">
   <video id="video" playsinline muted></video>
   <canvas id="gl"></canvas>
+  <canvas id="overlay"></canvas>
 </div>
 <div id="panel">
-  <label><span>전구밝기</span><input type="range" id="intensity" min="0.3" max="2.5" step="0.05" value="1.2"><i id="vIntensity"></i></label>
-  <label><span>빛크기</span><input type="range" id="size" min="0.4" max="2" step="0.05" value="1"><i id="vSize"></i></label>
-  <label><span>방어둡기</span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"><i id="vDark"></i></label>
+  <label><span>brightness</span><input type="range" id="intensity" min="0.3" max="2.5" step="0.05" value="1.2"><i id="vIntensity"></i></label>
+  <label><span>size</span><input type="range" id="size" min="0.4" max="2" step="0.05" value="1"><i id="vSize"></i></label>
+  <label><span>darkness</span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"><i id="vDark"></i></label>
+  <label class="ck"><input type="checkbox" id="sound" checked><span>sound</span></label>
+  <label class="ck"><input type="checkbox" id="debug"><span>debug</span></label>
 </div>
 <div id="err"></div>
 <script type="x-shader/x-vertex" id="vs">
@@ -42,20 +48,20 @@ precision highp float;
 #define MAXL 3
 in vec2 vUv; out vec4 outColor;
 uniform sampler2D uVideo, uMask;
-uniform float uAspect, uAmb, uShadow, uVirtual, uHasMask, uDebug, uTime;
+uniform float uAspect, uAmb, uVirtual, uHasMask, uDebug, uTime;
 uniform vec3 uWarm;
-uniform int uN;                 // 빛 개수
-uniform vec2 uL[MAXL];          // 빛 위치
-uniform vec2 uDir[MAXL];        // 전구 방향(손목→손가락)
-uniform float uR[MAXL];         // 크기
-uniform float uI[MAXL];         // 밝기
-uniform float uT[MAXL];         // 1 = 전구, 0 = 손가락 끝 빛
-uniform vec2 uHand[42];         // 양손 랜드마크
+uniform int uN;
+uniform vec2 uL[MAXL];
+uniform vec2 uDir[MAXL];
+uniform float uR[MAXL];
+uniform float uI[MAXL];
+uniform float uT[MAXL];
+uniform vec2 uHand[42];
 uniform int uHandN;
 
-vec2 mir(vec2 uv){ return vec2(1.0 - uv.x, uv.y); }       // 거울 모드
+vec2 mir(vec2 uv){ return vec2(1.0 - uv.x, uv.y); }
 float person(vec2 uv){ return uHasMask > 0.5 ? texture(uMask, mir(uv)).r : 0.0; }
-vec2 A(vec2 uv){ return vec2(uv.x * uAspect, uv.y); }     // 화면비 보정 좌표
+vec2 A(vec2 uv){ return vec2(uv.x * uAspect, uv.y); }
 
 void main(){
   vec2 uv = vUv;
@@ -63,35 +69,32 @@ void main(){
   vec3 lin = pow(srgb, vec3(2.2));
   float pm = smoothstep(0.25, 0.75, person(uv));
 
-  // 가장 가까운 손 랜드마크까지 거리
+
   float dh = 10.0;
   for (int i = 0; i < 42; i++) { if (i >= uHandN) break; dh = min(dh, distance(A(uv), A(uHand[i]))); }
 
   float flick = 1.0 + 0.025 * sin(uTime * 23.0) * sin(uTime * 7.3);
   vec3 light = vec3(0.0), sss = vec3(0.0);
 
-  // 1) 각 빛이 사람/손/배경을 비춤
+
   for (int j = 0; j < MAXL; j++) {
     if (j >= uN) break;
     float I = uI[j] * flick;
     if (I < 0.002) continue;
     float R  = max(uR[j], 0.012);
-    float Rr = max(R, 0.05);                       // 빛이 닿는 범위 (손가락 빛도 너무 좁지 않게)
+    float Rr = max(R, 0.05);
     float d  = distance(A(uv), A(uL[j]));
     float Ip = 1.0 / (1.0 + pow(d / (Rr * 3.2), 2.0));
     float Ib = 0.55 / (1.0 + pow(d / (Rr * 6.5), 2.0));
-    float sh = 0.0;                                // 배경에 드리우는 사람 그림자
-    for (int i = 1; i <= 8; i++) sh += smoothstep(0.3, 0.8, person(uv + (uL[j] - uv) * (0.035 * float(i))));
-    sh = (sh / 8.0) * uShadow * (1.0 - pm);
-    float L = mix(Ib * (1.0 - 0.9 * sh), Ip, pm);
+    float L = mix(Ib, Ip, pm);
     float hand = exp(-pow(dh / (Rr * 0.9), 2.0)) * max(pm, 0.35);
     float nearL = exp(-pow(d / (Rr * 2.2), 2.0));
     light += uWarm * (L * 2.6 + hand * nearL * 0.9) * I;
-    sss += vec3(1.0, 0.28, 0.10) * hand * nearL * 1.4 * I;   // 빛이 비쳐 붉게 물드는 손
+    sss += vec3(1.0, 0.28, 0.10) * hand * nearL * 1.4 * I;
   }
   vec3 col = lin * (uAmb + light) + lin * sss;
 
-  // 2) 빛 자체 (빛번짐, 별빛, 가상 전구)
+
   for (int j = 0; j < MAXL; j++) {
     if (j >= uN) break;
     float I = uI[j] * flick;
@@ -123,7 +126,7 @@ void main(){
       float streak = exp(-pow(ac / (R * 0.12), 2.0)) * exp(-pow(al / (R * 6.0), 2.0));
       col += (vec3(1.0, 0.97, 0.9) * g1 * 1.8 + uWarm * g2 * 0.7 + uWarm * g3 * 0.18 + uWarm * streak * 0.08) * I;
     } else {
-      // 손가락 끝에 맺힌 작은 빛: 밝은 핵 + 번짐 + 십자 별빛
+
       float core = exp(-pow(d / (R * 0.32), 2.0));
       float halo = exp(-pow(d / (R * 1.3), 2.0));
       float wide = exp(-pow(d / (R * 5.0), 2.0));
@@ -146,12 +149,12 @@ import { FilesetResolver, HandLandmarker, ImageSegmenter }
   from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const $ = (id) => document.getElementById(id);
-const video = $("video"), glc = $("gl");
+const video = $("video"), glc = $("gl"), ovc = $("overlay");
 
-/* ---------------- 설정 (슬라이더 3개 + 고정값) ---------------- */
+/* ---------------- settings ---------------- */
 const ui = {};
-for (const id of ["intensity", "size", "dark"]) ui[id] = $(id);
-const CFG = { kelvin: 2700, shadow: 0.7 };
+for (const id of ["intensity", "size", "dark", "sound", "debug"]) ui[id] = $(id);
+const CFG = { kelvin: 2700 };
 function readUI() {
   $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
   $("vSize").textContent = (+ui.size.value).toFixed(2);
@@ -171,7 +174,7 @@ function kelvinToRGB(k) {
 
 /* ---------------- WebGL ---------------- */
 const gl = glc.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false });
-if (!gl) { $("err").textContent = "이 브라우저는 WebGL2를 지원하지 않아요. 크롬이나 사파리 최신 버전에서 열어 주세요."; }
+if (!gl) { $("err").textContent = "WebGL2 not supported"; }
 
 const VS = document.getElementById("vs").textContent.trim();
 const FS = document.getElementById("fs").textContent.trim();
@@ -195,7 +198,7 @@ function initGL() {
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, "p");
   gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  for (const n of ["uVideo","uMask","uAspect","uAmb","uShadow","uVirtual","uHasMask","uDebug","uTime","uWarm",
+  for (const n of ["uVideo","uMask","uAspect","uAmb","uVirtual","uHasMask","uDebug","uTime","uWarm",
                    "uN","uL","uDir","uR","uI","uT","uHand","uHandN"])
     U[n] = gl.getUniformLocation(prog, n);
   const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
@@ -207,7 +210,7 @@ function initGL() {
   gl.uniform1i(U.uVideo, 0); gl.uniform1i(U.uMask, 1);
 }
 
-/* ---------------- 상태 ---------------- */
+/* ---------------- state ---------------- */
 const S = { mask: null, maskW: 0, maskH: 0, hasMask: false, maskDirty: false };
 const hands = new Map();
 function newHand() {
@@ -218,9 +221,9 @@ function newHand() {
 }
 let handLM = null, segm = null, aspect = 16 / 9;
 
-/* ---------------- 손 ---------------- */
+/* ---------------- hands ---------------- */
 function updateHand(H, lms, now) {
-  const P = lms.map(p => ({ x: 1 - p.x, y: p.y }));      // 거울 좌표
+  const P = lms.map(p => ({ x: 1 - p.x, y: p.y }));
   H.P = P;
   const ax = v => ({ x: v.x * aspect, y: v.y });
   const w = ax(P[0]), m = ax(P[9]);
@@ -234,9 +237,9 @@ function updateHand(H, lms, now) {
   H.seen = true; H.lastSeen = now;
 }
 
-/* ---------------- 빨간 점 찾기 ---------------- */
-// 영상 한 프레임을 작게 한 번 복사해 두고, 손 주변만 읽어서 씀
-const FW = 960;   // 십자 모양을 보려면 해상도가 조금 더 필요함
+/* ---------------- sticker detection ---------------- */
+
+const FW = 960;
 const frameC = document.createElement("canvas"); frameC.width = FW; frameC.height = 540;
 const fctx = frameC.getContext("2d", { willReadFrequently: true });
 let frameGrabbed = -1;
@@ -246,7 +249,7 @@ function grabFrame() {
   const fh = Math.round(FW / aspect); if (frameC.height !== fh) frameC.height = fh;
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
-// 스티커 색: 직접 맞춘 색이 저장돼 있으면 그 색, 아니면 초록
+
 let dotColor = { h: 125, s: 0.35, v: 0.18, tol: 30 };
 try {
   const c = JSON.parse(localStorage.getItem("bulb-light-dot-v1") || "null");
@@ -265,7 +268,7 @@ function hsv(r, g, b) {
   return { h, s: mx ? d / mx : 0, v: mx / 255 };
 }
 const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
-// 점 색이면 채도를, 아니면 0을 돌려줌
+
 function dotSat(r, g, b) {
   const c = hsv(r, g, b);
   return c.s >= dotColor.s && c.v >= dotColor.v && hueDist(c.h, dotColor.h) <= dotColor.tol ? c.s : 0;
@@ -273,8 +276,8 @@ function dotSat(r, g, b) {
 let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0), satBuf = new Float32Array(0);
 let compBuf = new Int32Array(0);
 const NB = 32, binR = new Float32Array(NB);
-// 덩어리 모양이 십자(+)인지: 중심에서 각 방향으로 얼마나 뻗었는지 재서
-// 90도마다 반복되는 정도(십자) vs 180도마다 반복되는 정도(입술 같은 긴 타원)를 비교
+
+
 function crossness(pix, cnt, w, cxp, cyp) {
   binR.fill(0);
   for (let k = 0; k < cnt; k++) {
@@ -292,7 +295,7 @@ function crossness(pix, cnt, w, cxp, cyp) {
   if (m < 1e-3) return { cross: 0, elong: 1, size: 0 };
   return { cross: Math.hypot(c4, s4) / NB / m, elong: Math.hypot(c2, s2) / NB / m, size: m };
 }
-// 손 주변에서 동그란 스티커를 찾아 그 가운데를 돌려줌 (화면 좌표, 거울 기준)
+
 function findDot(H, now) {
   grabFrame();
   const vw = frameC.width, vh = frameC.height;
@@ -308,7 +311,8 @@ function findDot(H, now) {
   if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); compBuf = new Int32Array(n); }
   const m = maskBuf, sat = satBuf;
   for (let i = 0; i < n; i++) { const v = dotSat(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); sat[i] = v; m[i] = v > 0 ? 1 : 0; }
-  // 방금까지 따라가던 자리 (잠깐 흐려져서 십자 모양이 안 보여도 이 근처면 봐줌)
+  H.dbgMask = ui.debug.checked ? { w, h, m: m.slice(0, n) } : null;
+
   const locked = H.dot && now - H.dotSeen < 400;
   const prev = H.dot ? { x: (1 - H.dot.x) * vw - x0, y: H.dot.y * vh - y0 } : null;
   const near = H.Lp * vh * 0.45;
@@ -329,8 +333,8 @@ function findDot(H, now) {
     }
     if (cnt < minArea || cnt > maxArea) continue;
     const bx = sx / ss, by = sy / ss;
-    // 동그란 스티커인지: 퍼진 모양으로 가로세로 비율(aspect)과 꽉 찬 정도(fill)를 잼
-    // 원 = 1:1, 기울인 스티커 = 2:1 정도, 길쭉한 잎·선 = 3:1 이상, 십자·얼룩 = fill 낮음
+
+
     const mx = ux / cnt, my = uy / cnt;
     const cxx = uxx / cnt - mx * mx, cyy = uyy / cnt - my * my, cxy = uxy / cnt - mx * my;
     const tr = cxx + cyy, det = cxx * cyy - cxy * cxy, disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
@@ -338,7 +342,7 @@ function findDot(H, now) {
     const aspect = Math.sqrt(l1 / l2), fill = cnt / (4 * Math.PI * Math.sqrt(l1 * l2));
     const isRound = cnt >= 8 && aspect < 2.3 && fill > 0.75;
     const dPrev = prev ? Math.hypot(bx - prev.x, by - prev.y) : 1e9;
-    const keep = locked && dPrev < near && aspect < 3.2;    // 따라가던 스티커가 잠깐 가려지거나 흐려진 경우
+    const keep = locked && dPrev < near && aspect < 3.2;
     if (!isRound && !keep) continue;
     let score = (isRound ? 2 : 0) + Math.min(fill, 1) + Math.sqrt(cnt) * 0.05 - (aspect - 1) * 0.8;
     if (prev) score -= dPrev / (H.Lp * vh) * 2;
@@ -350,7 +354,7 @@ function findDot(H, now) {
 
 const visibleHands = () => [...hands.values()].filter(H => H.seen);
 
-// 손마다 매 프레임 스티커를 찾음. 2프레임 연속 보이면 켜고, 잠깐(0.2초) 가려지는 건 봐줌
+
 function stepFind(now) {
   for (const H of visibleHands()) {
     const r = findDot(H, now);
@@ -367,11 +371,31 @@ function stepFind(now) {
   }
 }
 
-/* ---------------- 켜짐 + 깜빡임 ---------------- */
+/* ---------------- sound ---------------- */
+let actx = null;
+function unlockAudio() {
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch (e) {}
+}
+addEventListener("pointerdown", unlockAudio); addEventListener("keydown", unlockAudio);
+function click(on) {
+  if (!ui.sound.checked) return;
+  try {
+    unlockAudio();
+    const t = actx.currentTime, len = 0.04;
+    const b = actx.createBuffer(1, actx.sampleRate * len, actx.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 6);
+    const src = actx.createBufferSource(); src.buffer = b;
+    const f = actx.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = on ? 2600 : 1700; f.Q.value = 1.4;
+    const g = actx.createGain(); g.gain.value = 0.9;
+    src.connect(f).connect(g).connect(actx.destination); src.start(t);
+  } catch (e) {}
+}
+
+/* ---------------- on/off + flicker ---------------- */
 const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];
 function stepLight(o, want, now, dt) {
-  if (want && !o.on) { o.on = true; o.flickerT = now; }
-  if (!want && o.on) { o.on = false; o.flickerT = -1; }
+  if (want && !o.on) { o.on = true; o.flickerT = now; click(true); }
+  if (!want && o.on) { o.on = false; o.flickerT = -1; click(false); }
   const max = +ui.intensity.value;
   if (o.on && o.flickerT >= 0) {
     const e = (now - o.flickerT) / 70 | 0;
@@ -396,7 +420,7 @@ function stepHands(now, dt) {
   }
 }
 
-/* ---------------- 메인 루프 ---------------- */
+/* ---------------- main loop ---------------- */
 let frame = 0, lastT = performance.now(), lastVideoTime = -1;
 function loop() {
   requestAnimationFrame(loop);
@@ -452,7 +476,6 @@ function loop() {
 
   gl.uniform1f(U.uAspect, aspect);
   gl.uniform1f(U.uAmb, Math.pow(1 - +ui.dark.value, 1.6));
-  gl.uniform1f(U.uShadow, CFG.shadow);
   gl.uniform1f(U.uVirtual, 0);
   gl.uniform1f(U.uHasMask, S.hasMask ? 1 : 0);
   gl.uniform1f(U.uDebug, 0);
@@ -464,9 +487,42 @@ function loop() {
   gl.uniform2fv(U.uHand, hp);
   gl.uniform1i(U.uHandN, hn);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  drawOverlay();
 }
 
-/* ---------------- 시작 ---------------- */
+/* ---------------- debug overlay ---------------- */
+const octx = ovc.getContext("2d"), dbgC = document.createElement("canvas");
+function drawOverlay() {
+  octx.clearRect(0, 0, ovc.width, ovc.height);
+  if (!ui.debug.checked) return;
+  const W = ovc.width, Hh = ovc.height;
+  octx.font = "12px ui-monospace, Menlo, monospace";
+  for (const h of visibleHands()) {
+    octx.fillStyle = "#4cf";
+    for (const p of h.P) { octx.beginPath(); octx.arc(p.x * W, p.y * Hh, 3, 0, 7); octx.fill(); }
+    if (h.roi) {
+      const R = h.roi, rw = R.w / R.vw * W, rh = R.h / R.vh * Hh, rx = (1 - (R.x0 + R.w) / R.vw) * W, ry = R.y0 / R.vh * Hh;
+      octx.strokeStyle = "rgba(255,255,255,.35)"; octx.setLineDash([4, 4]); octx.lineWidth = 1;
+      octx.strokeRect(rx, ry, rw, rh); octx.setLineDash([]);
+      if (h.dbgMask && h.dbgMask.w === R.w && h.dbgMask.h === R.h) {
+        const M = h.dbgMask, img = new ImageData(M.w, M.h);
+        for (let i = 0; i < M.m.length; i++) if (M.m[i]) { img.data[i * 4 + 1] = 230; img.data[i * 4 + 2] = 255; img.data[i * 4 + 3] = 200; }
+        dbgC.width = M.w; dbgC.height = M.h; dbgC.getContext("2d").putImageData(img, 0, 0);
+        octx.save(); octx.translate(rx + rw, ry); octx.scale(-1, 1); octx.drawImage(dbgC, 0, 0, rw, rh); octx.restore();
+      }
+    }
+    if (h.dot) {
+      const fx = h.dot.x * W, fy = h.dot.y * Hh;
+      octx.strokeStyle = h.hasBulb ? "#ff5a5a" : "rgba(255,255,255,.6)"; octx.lineWidth = 1.5;
+      octx.beginPath(); octx.moveTo(fx - 10, fy); octx.lineTo(fx + 10, fy); octx.moveTo(fx, fy - 10); octx.lineTo(fx, fy + 10); octx.stroke();
+      octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(fx + 12, fy - 9, 92, 18);
+      octx.fillStyle = h.hasBulb ? "#ffc861" : "#ccc";
+      octx.fillText(h.hasBulb ? "found " + h.dotArea + "px" : "lost", fx + 16, fy + 4);
+    }
+  }
+}
+
+/* ---------------- startup ---------------- */
 async function loadModels() {
   const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
   const mk = async (Cls, opts) => {
@@ -488,7 +544,7 @@ async function loadModels() {
 function resize() {
   const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
   aspect = vw / vh;
-  glc.width = vw; glc.height = vh;
+  glc.width = ovc.width = vw; glc.height = ovc.height = vh;
 }
 (async () => {
   try {
