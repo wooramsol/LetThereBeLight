@@ -250,11 +250,8 @@ function grabFrame() {
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
 
-let dotColor = { h: 125, s: 0.35, v: 0.18, tol: 30 };
-try {
-  const c = JSON.parse(localStorage.getItem("bulb-light-dot-v1") || "null");
-  if (c && typeof c.h === "number") dotColor = c;
-} catch (e) {}
+const dotColor = { h: 120, s: 0.22, v: 0.12, tol: 50 };   // green, hue 70..170
+try { localStorage.removeItem("bulb-light-dot-v1"); localStorage.removeItem("bulb-light-dot-preset"); } catch (e) {}
 
 function hsv(r, g, b) {
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
@@ -273,7 +270,7 @@ function dotSat(r, g, b) {
   const c = hsv(r, g, b);
   return c.s >= dotColor.s && c.v >= dotColor.v && hueDist(c.h, dotColor.h) <= dotColor.tol ? c.s : 0;
 }
-let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0), satBuf = new Float32Array(0);
+let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0), satBuf = new Float32Array(0), dilBuf = new Uint8Array(0);
 let compBuf = new Int32Array(0);
 const NB = 32, binR = new Float32Array(NB);
 
@@ -312,6 +309,15 @@ function findDot(H, now) {
   const m = maskBuf, sat = satBuf;
   for (let i = 0; i < n; i++) { const v = dotSat(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); sat[i] = v; m[i] = v > 0 ? 1 : 0; }
   H.dbgMask = ui.debug.checked ? { w, h, m: m.slice(0, n) } : null;
+  // fill 1-2px gaps (glare on glossy stickers, fingers on the edge)
+  if (dilBuf.length < n) dilBuf = new Uint8Array(n);
+  for (let pass = 0; pass < 2; pass++) {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      dilBuf[i] = m[i] || (x > 0 && m[i - 1]) || (x < w - 1 && m[i + 1]) || (y > 0 && m[i - w]) || (y < h - 1 && m[i + w]) ? 1 : 0;
+    }
+    m.set(dilBuf.subarray(0, n));
+  }
 
   const locked = H.dot && now - H.dotSeen < 400;
   const prev = H.dot ? { x: (1 - H.dot.x) * vw - x0, y: H.dot.y * vh - y0 } : null;
@@ -340,7 +346,7 @@ function findDot(H, now) {
     const tr = cxx + cyy, det = cxx * cyy - cxy * cxy, disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
     const l1 = tr / 2 + disc, l2 = Math.max(1e-6, tr / 2 - disc);
     const aspect = Math.sqrt(l1 / l2), fill = cnt / (4 * Math.PI * Math.sqrt(l1 * l2));
-    const isRound = cnt >= 8 && aspect < 2.3 && fill > 0.75;
+    const isRound = cnt >= 12 && aspect < 2.3 && fill > 0.55;
     const dPrev = prev ? Math.hypot(bx - prev.x, by - prev.y) : 1e9;
     const keep = locked && dPrev < near && aspect < 3.2;
     if (!isRound && !keep) continue;
