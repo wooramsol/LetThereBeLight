@@ -238,7 +238,7 @@ function updateHand(H, lms, now) {
 
 /* ---------------- sticker detection ---------------- */
 
-const FW = 960;
+const FW = 640;
 const frameC = document.createElement("canvas"); frameC.width = FW; frameC.height = 540;
 const fctx = frameC.getContext("2d", { willReadFrequently: true });
 let frameGrabbed = -1;
@@ -266,50 +266,26 @@ function hsv(r, g, b) {
 const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
 
 function dotSat(r, g, b) {
-  const c = hsv(r, g, b);
-  return c.s >= dotColor.s && c.v >= dotColor.v && hueDist(c.h, dotColor.h) <= dotColor.tol ? c.s : 0;
+  if (g < r || g < b) return 0;                       // hue 60..180 needs green to be the max
+  const mn = r < b ? r : b, d = g - mn;
+  if (g < dotColor.v * 255 || d < dotColor.s * g || d === 0) return 0;
+  const hh = 60 * ((b - r) / d + 2);
+  return Math.abs(hh - dotColor.h) <= dotColor.tol ? d / g : 0;
 }
 let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0), satBuf = new Float32Array(0), dilBuf = new Uint8Array(0);
-let compBuf = new Int32Array(0);
-const NB = 32, binR = new Float32Array(NB);
+const tracks = [];   // one entry per sticker on screen
+let trackId = 0, dbgMask = null;
 
-
-function crossness(pix, cnt, w, cxp, cyp) {
-  binR.fill(0);
-  for (let k = 0; k < cnt; k++) {
-    const j = pix[k], dx = (j % w) - cxp, dy = ((j / w) | 0) - cyp;
-    const r = Math.hypot(dx, dy) + 0.5;
-    const b = Math.min(NB - 1, Math.floor((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * NB));
-    if (r > binR[b]) binR[b] = r;
-  }
-  let m = 0, c2 = 0, s2 = 0, c4 = 0, s4 = 0;
-  for (let b = 0; b < NB; b++) {
-    const th = (b + 0.5) / NB * 2 * Math.PI, r = binR[b];
-    m += r; c2 += r * Math.cos(2 * th); s2 += r * Math.sin(2 * th); c4 += r * Math.cos(4 * th); s4 += r * Math.sin(4 * th);
-  }
-  m /= NB;
-  if (m < 1e-3) return { cross: 0, elong: 1, size: 0 };
-  return { cross: Math.hypot(c4, s4) / NB / m, elong: Math.hypot(c2, s2) / NB / m, size: m };
-}
-
-function findDot(H, now) {
+// every round green blob in the frame -> { x, y (mirrored, 0..1), r (radius / frame height), area }
+function findStickers() {
   grabFrame();
-  const vw = frameC.width, vh = frameC.height;
-  const r = 3.2 * H.Lp * vh;
-  const cx = (1 - H.palm.x / aspect) * vw, cy = H.palm.y * vh;
-  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(vw, Math.ceil(cx + r));
-  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(vh, Math.ceil(cy + r));
-  const w = x1 - x0, h = y1 - y0;
-  H.roi = { x0, y0, w, h, vw, vh };
-  if (w < 4 || h < 4) return null;
-  const d = fctx.getImageData(x0, y0, w, h).data;
-  const n = w * h;
-  if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); compBuf = new Int32Array(n); }
+  const w = frameC.width, h = frameC.height, n = w * h;
+  const d = fctx.getImageData(0, 0, w, h).data;
+  if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); dilBuf = new Uint8Array(n); }
   const m = maskBuf, sat = satBuf;
   for (let i = 0; i < n; i++) { const v = dotSat(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); sat[i] = v; m[i] = v > 0 ? 1 : 0; }
-  H.dbgMask = ui.debug.checked ? { w, h, m: m.slice(0, n) } : null;
+  dbgMask = ui.debug.checked ? { w, h, m: m.slice(0, n) } : null;
   // fill 1-2px gaps (glare on glossy stickers, fingers on the edge)
-  if (dilBuf.length < n) dilBuf = new Uint8Array(n);
   for (let pass = 0; pass < 2; pass++) {
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const i = y * w + x;
@@ -317,12 +293,7 @@ function findDot(H, now) {
     }
     m.set(dilBuf.subarray(0, n));
   }
-
-  const locked = H.dot && now - H.dotSeen < 400;
-  const prev = H.dot ? { x: (1 - H.dot.x) * vw - x0, y: H.dot.y * vh - y0 } : null;
-  const near = H.Lp * vh * 0.45;
-  const minArea = 6, maxArea = Math.max(80, (H.Lp * vh * 1.2) ** 2);
-  let best = null;
+  const out = [], minArea = 12, maxArea = (0.25 * h) ** 2;
   for (let i = 0; i < n; i++) {
     if (m[i] !== 1) continue;
     let sp = 0, cnt = 0, sx = 0, sy = 0, ss = 0, ux = 0, uy = 0, uxx = 0, uyy = 0, uxy = 0;
@@ -336,44 +307,41 @@ function findDot(H, now) {
       if (jy > 0 && m[j - w] === 1) { m[j - w] = 2; stackBuf[sp++] = j - w; }
       if (jy < h - 1 && m[j + w] === 1) { m[j + w] = 2; stackBuf[sp++] = j + w; }
     }
-    if (cnt < minArea || cnt > maxArea) continue;
+    if (cnt < minArea || cnt > maxArea || ss <= 0) continue;
     const bx = sx / ss, by = sy / ss;
-
-
+    // round = aspect ~1 (2:1 when tilted) and filled; leaves / lines are long, crosses / smudges are not filled
     const mx = ux / cnt, my = uy / cnt;
     const cxx = uxx / cnt - mx * mx, cyy = uyy / cnt - my * my, cxy = uxy / cnt - mx * my;
     const tr = cxx + cyy, det = cxx * cyy - cxy * cxy, disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
     const l1 = tr / 2 + disc, l2 = Math.max(1e-6, tr / 2 - disc);
-    const aspect = Math.sqrt(l1 / l2), fill = cnt / (4 * Math.PI * Math.sqrt(l1 * l2));
-    const isRound = cnt >= 12 && aspect < 2.3 && fill > 0.55;
-    const dPrev = prev ? Math.hypot(bx - prev.x, by - prev.y) : 1e9;
-    const keep = locked && dPrev < near && aspect < 3.2;
-    if (!isRound && !keep) continue;
-    let score = (isRound ? 2 : 0) + Math.min(fill, 1) + Math.sqrt(cnt) * 0.05 - (aspect - 1) * 0.8;
-    if (prev) score -= dPrev / (H.Lp * vh) * 2;
-    if (!best || score > best.score) best = { score, bx, by, cnt, aspect };
+    const asp = Math.sqrt(l1 / l2), fill = cnt / (4 * Math.PI * Math.sqrt(l1 * l2));
+    const x = 1 - (bx + 0.5) / w, y = (by + 0.5) / h;
+    const tracked = tracks.some(t => Math.hypot((x - t.x) * aspect, y - t.y) < Math.max(0.03, t.r * 4));
+    const isRound = asp < 2.3 && fill > 0.55;
+    if (!isRound && !(tracked && asp < 3.2)) continue;   // a tracked sticker may look squashed for a moment
+    out.push({ x, y, r: Math.sqrt(cnt / Math.PI) / h, area: cnt });
   }
-  if (!best) return null;
-  return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt, cross: best.aspect };
+  return out;
 }
 
 const visibleHands = () => [...hands.values()].filter(H => H.seen);
 
-
+// match this frame's stickers to the ones already on screen (nearest first)
 function stepFind(now) {
-  for (const H of visibleHands()) {
-    const r = findDot(H, now);
-    if (r) {
-      if (!H.dot || now - H.dotSeen > 300) H.dot = { x: r.x, y: r.y };
-      else { const k = 0.7; H.dot.x += (r.x - H.dot.x) * k; H.dot.y += (r.y - H.dot.y) * k; }
-      H.dotSeen = now; H.dotArea = r.area;
-      H.dotHits = Math.min(H.dotHits + 1, 10);
-      if (H.dotHits >= 2) H.hasBulb = true;
-    } else {
-      H.dotHits = 0;
-      if (now - H.dotSeen > 200) H.hasBulb = false;
+  const found = findStickers().sort((a, b) => b.area - a.area);
+  for (const t of tracks) t.matched = false;
+  for (const f of found) {
+    let best = null, bd = 1e9;
+    for (const t of tracks) { if (t.matched) continue; const dd = Math.hypot((f.x - t.x) * aspect, f.y - t.y); if (dd < bd) { bd = dd; best = t; } }
+    if (best && bd < Math.max(0.05, best.r * 5)) {
+      const k = 0.7; best.x += (f.x - best.x) * k; best.y += (f.y - best.y) * k; best.r += (f.r - best.r) * 0.3;
+      best.seen = now; best.area = f.area; best.hits = Math.min(best.hits + 1, 10); best.matched = true;
+    } else if (tracks.length < 6) {
+      tracks.push({ id: trackId++, x: f.x, y: f.y, r: f.r, area: f.area, seen: now, hits: 1, matched: true, live: false,
+                    on: false, I: 0, flickerT: -1, L: null, R: 0.04, dir: { x: 0, y: -1 } });
     }
   }
+  for (const t of tracks) if (!t.matched) t.hits = 0;
 }
 
 /* ---------------- sound ---------------- */
@@ -411,16 +379,20 @@ function stepLight(o, want, now, dt) {
 }
 function stepHands(now, dt) {
   for (const [key, H] of hands) {
-    if (H.seen && now - H.lastSeen > 250) { H.seen = false; H.hasBulb = false; }
-    stepLight(H, H.seen && H.hasBulb && !!H.dot, now, dt);
-    if (H.dot) {
-      if (!H.L) H.L = { x: H.dot.x, y: H.dot.y };
-      const k = Math.min(1, dt * 40);
-      H.L.x += (H.dot.x - H.L.x) * k; H.L.y += (H.dot.y - H.L.y) * k;
-    }
-    const tR = H.Lp * 0.3 * +ui.size.value;
-    H.R += (tR - H.R) * Math.min(1, dt * 12);
-    if (!H.seen && H.I < 0.005) hands.delete(key);
+    if (H.seen && now - H.lastSeen > 250) H.seen = false;
+    if (!H.seen && now - H.lastSeen > 1000) hands.delete(key);
+  }
+  for (let i = tracks.length - 1; i >= 0; i--) {
+    const t = tracks[i], visible = now - t.seen < 200;
+    if (t.hits >= 2) t.live = true;
+    if (!visible) t.live = false;
+    stepLight(t, t.live, now, dt);
+    if (!t.L) t.L = { x: t.x, y: t.y };
+    const k = Math.min(1, dt * 40);
+    t.L.x += (t.x - t.L.x) * k; t.L.y += (t.y - t.L.y) * k;
+    const tR = Math.min(0.2, Math.max(0.012, t.r * 5)) * +ui.size.value;
+    t.R += (tR - t.R) * Math.min(1, dt * 12);
+    if (!visible && t.I < 0.005) tracks.splice(i, 1);
   }
 }
 
@@ -461,7 +433,7 @@ function loop() {
   stepHands(now, dt);
 
   const lights = [];
-  for (const H of hands.values()) if (H.L && H.I > 0.002) lights.push(H);
+  for (const t of tracks) if (t.L && t.I > 0.002) lights.push(t);
   const n = Math.min(MAXL, lights.length);
   const aL = new Float32Array(MAXL * 2), aD = new Float32Array(MAXL * 2), aR = new Float32Array(MAXL), aI = new Float32Array(MAXL), aT = new Float32Array(MAXL);
   for (let i = 0; i < n; i++) {
@@ -500,29 +472,22 @@ function drawOverlay() {
   octx.clearRect(0, 0, ovc.width, ovc.height);
   if (!ui.debug.checked) return;
   const W = ovc.width, Hh = ovc.height;
-  octx.font = "12px ui-monospace, Menlo, monospace";
-  for (const h of visibleHands()) {
-    octx.fillStyle = "#4cf";
-    for (const p of h.P) { octx.beginPath(); octx.arc(p.x * W, p.y * Hh, 3, 0, 7); octx.fill(); }
-    if (h.roi) {
-      const R = h.roi, rw = R.w / R.vw * W, rh = R.h / R.vh * Hh, rx = (1 - (R.x0 + R.w) / R.vw) * W, ry = R.y0 / R.vh * Hh;
-      octx.strokeStyle = "rgba(255,255,255,.35)"; octx.setLineDash([4, 4]); octx.lineWidth = 1;
-      octx.strokeRect(rx, ry, rw, rh); octx.setLineDash([]);
-      if (h.dbgMask && h.dbgMask.w === R.w && h.dbgMask.h === R.h) {
-        const M = h.dbgMask, img = new ImageData(M.w, M.h);
-        for (let i = 0; i < M.m.length; i++) if (M.m[i]) { img.data[i * 4 + 1] = 230; img.data[i * 4 + 2] = 255; img.data[i * 4 + 3] = 200; }
-        dbgC.width = M.w; dbgC.height = M.h; dbgC.getContext("2d").putImageData(img, 0, 0);
-        octx.save(); octx.translate(rx + rw, ry); octx.scale(-1, 1); octx.drawImage(dbgC, 0, 0, rw, rh); octx.restore();
-      }
-    }
-    if (h.dot) {
-      const fx = h.dot.x * W, fy = h.dot.y * Hh;
-      octx.strokeStyle = h.hasBulb ? "#ff5a5a" : "rgba(255,255,255,.6)"; octx.lineWidth = 1.5;
-      octx.beginPath(); octx.moveTo(fx - 10, fy); octx.lineTo(fx + 10, fy); octx.moveTo(fx, fy - 10); octx.lineTo(fx, fy + 10); octx.stroke();
-      octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(fx + 12, fy - 9, 92, 18);
-      octx.fillStyle = h.hasBulb ? "#ffc861" : "#ccc";
-      octx.fillText(h.hasBulb ? "found " + h.dotArea + "px" : "lost", fx + 16, fy + 4);
-    }
+  if (dbgMask) {
+    const M = dbgMask, img = new ImageData(M.w, M.h);
+    for (let i = 0; i < M.m.length; i++) if (M.m[i]) { img.data[i * 4 + 1] = 230; img.data[i * 4 + 2] = 255; img.data[i * 4 + 3] = 200; }
+    dbgC.width = M.w; dbgC.height = M.h; dbgC.getContext("2d").putImageData(img, 0, 0);
+    octx.save(); octx.translate(W, 0); octx.scale(-1, 1); octx.drawImage(dbgC, 0, 0, W, Hh); octx.restore();
+  }
+  octx.fillStyle = "#4cf";
+  for (const h of visibleHands()) for (const p of h.P) { octx.beginPath(); octx.arc(p.x * W, p.y * Hh, 3, 0, 7); octx.fill(); }
+  octx.font = "12px ui-monospace, Menlo, monospace"; octx.lineWidth = 1.5;
+  for (const t of tracks) {
+    const fx = t.x * W, fy = t.y * Hh;
+    octx.strokeStyle = t.live ? "#ff5a5a" : "rgba(255,255,255,.6)";
+    octx.beginPath(); octx.moveTo(fx - 10, fy); octx.lineTo(fx + 10, fy); octx.moveTo(fx, fy - 10); octx.lineTo(fx, fy + 10); octx.stroke();
+    octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(fx + 12, fy - 9, 92, 18);
+    octx.fillStyle = t.live ? "#ffc861" : "#ccc";
+    octx.fillText(t.live ? "found " + t.area + "px" : "lost", fx + 16, fy + 4);
   }
 }
 
