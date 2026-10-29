@@ -281,7 +281,7 @@ const tracks = [];   // one entry per sticker on screen
 let trackId = 0, dbgMask = null;
 
 // every round green blob in the frame -> { x, y (mirrored, 0..1), r (radius / frame height), area }
-function findStickers() {
+function findStickers(now) {
   grabFrame();
   const w = frameC.width, h = frameC.height, n = w * h;
   const d = fctx.getImageData(0, 0, w, h).data;
@@ -320,10 +320,11 @@ function findStickers() {
     const l1 = tr / 2 + disc, l2 = Math.max(1e-6, tr / 2 - disc);
     const asp = Math.sqrt(l1 / l2), fill = cnt / (4 * Math.PI * Math.sqrt(l1 * l2));
     const x = 1 - (bx + 0.5) / w, y = (by + 0.5) / h;
-    const tracked = tracks.some(t => Math.hypot((x - t.x) * aspect, y - t.y) < Math.max(0.03, t.r * 4));
+    const tracked = tracks.some(t => { if (!t.live) return false; const p = predict(t, now); return Math.hypot((x - p.x) * aspect, y - p.y) < reach(t, now); });
     const isRound = asp < 2.3 && fill > 0.55 && ss / oc > 0.34;
-    if (!isRound && !(tracked && asp < 3.2)) continue;   // a tracked sticker may look squashed for a moment
-    out.push({ x, y, r: Math.sqrt(cnt / Math.PI) / h, area: cnt });
+    // a sticker we are already following may look squashed or motion-blurred (long, paler smear)
+    if (!isRound && !(tracked && asp < 8 && fill > 0.35 && ss / oc > 0.26)) continue;
+    out.push({ x, y, r: Math.sqrt(cnt / Math.PI) / h, area: cnt, round: isRound });
   }
   return out;
 }
@@ -331,17 +332,30 @@ function findStickers() {
 const visibleHands = () => [...hands.values()].filter(H => H.seen);
 
 // match this frame's stickers to the ones already on screen (nearest first)
+// where a sticker should be now (last seen position + speed), and how far from there we still accept it
+function predict(t, now) { const g = Math.min(300, now - t.seen) / 1000; return { x: t.mx + t.vx * g, y: t.my + t.vy * g }; }
+function reach(t, now) { return Math.max(0.06, t.r * 6) + Math.hypot(t.vx * aspect, t.vy) * Math.min(300, now - t.seen) / 1000 * 1.0; }
+
+// match this frame's stickers to the ones already on screen, using predicted positions so fast moves stay the same sticker
 function stepFind(now) {
-  const found = findStickers().sort((a, b) => b.area - a.area);
+  const found = findStickers(now).sort((a, b) => b.area - a.area);
   for (const t of tracks) t.matched = false;
   for (const f of found) {
     let best = null, bd = 1e9;
-    for (const t of tracks) { if (t.matched) continue; const dd = Math.hypot((f.x - t.x) * aspect, f.y - t.y); if (dd < bd) { bd = dd; best = t; } }
-    if (best && bd < Math.max(0.05, best.r * 5)) {
-      const k = 0.7; best.x += (f.x - best.x) * k; best.y += (f.y - best.y) * k; best.r += (f.r - best.r) * 0.3;
+    for (const t of tracks) {
+      if (t.matched || (!t.live && !f.round)) continue;
+      const p = predict(t, now), dd = Math.hypot((f.x - p.x) * aspect, f.y - p.y);
+      if (dd < reach(t, now) && dd < bd) { bd = dd; best = t; }
+    }
+    if (best) {
+      const g = Math.max(16, now - best.seen) / 1000;
+      best.vx += ((f.x - best.mx) / g - best.vx) * 0.5; best.vy += ((f.y - best.my) / g - best.vy) * 0.5;
+      best.mx = f.x; best.my = f.y;
+      const k = 0.85; best.x += (f.x - best.x) * k; best.y += (f.y - best.y) * k;
+      if (f.round) best.r += (f.r - best.r) * 0.3;   // a blurred smear does not change the size
       best.seen = now; best.area = f.area; best.hits = Math.min(best.hits + 1, 10); best.matched = true;
-    } else if (tracks.length < 6) {
-      tracks.push({ id: trackId++, x: f.x, y: f.y, r: f.r, area: f.area, seen: now, hits: 1, matched: true, live: false,
+    } else if (f.round && tracks.length < 6) {
+      tracks.push({ id: trackId++, x: f.x, y: f.y, mx: f.x, my: f.y, vx: 0, vy: 0, r: f.r, area: f.area, seen: now, hits: 1, matched: true, live: false,
                     on: false, I: 0, flickerT: -1, L: null, R: 0.04, dir: { x: 0, y: -1 } });
     }
   }
@@ -387,10 +401,12 @@ function stepHands(now, dt) {
     if (!H.seen && now - H.lastSeen > 1000) hands.delete(key);
   }
   for (let i = tracks.length - 1; i >= 0; i--) {
-    const t = tracks[i], visible = now - t.seen < 200;
+    const t = tracks[i], gap = now - t.seen, visible = gap < (t.live ? 350 : 200);   // a lit sticker gets a longer grace period
     if (t.hits >= 6) t.live = true;   // must be seen 6 frames in a row (~0.2s) before it lights up
     if (!visible) t.live = false;
     stepLight(t, t.live, now, dt);
+    // while briefly lost, keep moving along the last direction, slowing down
+    if (gap > 50 && visible) { const dec = Math.exp(-gap / 150); t.x += t.vx * dt * dec; t.y += t.vy * dt * dec; }
     if (!t.L) t.L = { x: t.x, y: t.y };
     const k = Math.min(1, dt * 40);
     t.L.x += (t.x - t.L.x) * k; t.L.y += (t.y - t.L.y) * k;
