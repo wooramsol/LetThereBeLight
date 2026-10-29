@@ -33,7 +33,6 @@
   <label><span>brightness</span><input type="range" id="intensity" min="0.3" max="2.5" step="0.05" value="1.2"><i id="vIntensity"></i></label>
   <label><span>size</span><input type="range" id="size" min="0.4" max="2" step="0.05" value="1"><i id="vSize"></i></label>
   <label><span>darkness</span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"><i id="vDark"></i></label>
-  <label class="ck"><input type="checkbox" id="sound" checked><span>sound</span></label>
   <label class="ck"><input type="checkbox" id="debug"><span>debug</span></label>
 </div>
 <div id="err"></div>
@@ -153,7 +152,7 @@ const video = $("video"), glc = $("gl"), ovc = $("overlay");
 
 /* ---------------- settings ---------------- */
 const ui = {};
-for (const id of ["intensity", "size", "dark", "sound", "debug"]) ui[id] = $(id);
+for (const id of ["intensity", "size", "dark", "debug"]) ui[id] = $(id);
 const CFG = { kelvin: 2700 };
 function readUI() {
   $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
@@ -384,7 +383,6 @@ function unlockAudio() {
 }
 addEventListener("pointerdown", unlockAudio); addEventListener("keydown", unlockAudio);
 function click(on) {
-  if (!ui.sound.checked) return;
   try {
     unlockAudio();
     const t = actx.currentTime, len = 0.04;
