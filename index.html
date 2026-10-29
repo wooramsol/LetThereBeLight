@@ -3,161 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>전구 켜기 · Bulb Light</title>
-<meta name="description" content="웹캠 앞에서 전구를 들면 불이 켜지고, 손과 방이 자연스럽게 밝아지는 인터랙티브 조명 효과">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='26' r='18' fill='%23ffd36b'/%3E%3Crect x='24' y='42' width='16' height='12' rx='3' fill='%23999'/%3E%3C/svg%3E">
+<title>bulb-light</title>
 <style>
-  :root {
-    --bg: #07070a; --panel: rgba(18,18,24,.82); --line: rgba(255,255,255,.12);
-    --text: #f2efe8; --muted: #a29e95; --accent: #ffc861;
-  }
+  :root { --fg: #d8d8d8; --dim: #7a7a7a; --bg: #000; }
   * { box-sizing: border-box; }
-  [hidden] { display: none !important; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", system-ui, sans-serif; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   #stage { position: fixed; inset: 0; }
   #stage canvas, #stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   #video { opacity: 0; pointer-events: none; }
-  #overlay { pointer-events: none; }
-
-  /* 시작 화면 */
-  #intro { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
-    background: radial-gradient(ellipse at 50% 38%, rgba(255,190,90,.16), transparent 60%), var(--bg); z-index: 10; }
-  #intro .box { max-width: 440px; text-align: center; }
-  #intro .bulb { width: 84px; height: 84px; margin: 0 auto 18px; border-radius: 50%;
-    background: radial-gradient(circle at 50% 45%, #fff6dc 0 18%, #ffd36b 40%, rgba(255,170,60,.0) 72%);
-    animation: breathe 2.6s ease-in-out infinite; }
-  @keyframes breathe { 50% { transform: scale(1.08); filter: brightness(1.25); } }
-  #intro h1 { font-size: 30px; margin: 0 0 10px; letter-spacing: -.02em; }
-  #intro p { color: var(--muted); line-height: 1.65; margin: 0 0 8px; font-size: 15px; }
-  #intro ul { text-align: left; color: var(--muted); font-size: 14px; line-height: 1.7; padding-left: 20px; margin: 16px 0 22px; }
-  button.primary { appearance: none; border: 0; background: var(--accent); color: #1d1406; font-weight: 700;
-    font-size: 16px; padding: 14px 28px; border-radius: 999px; cursor: pointer; font-family: inherit; }
-  button.primary:disabled { opacity: .6; cursor: wait; }
-  #err { color: #ff8a7a; font-size: 14px; margin-top: 14px; min-height: 1em; }
-
-  /* 상태 표시 */
-  #status { position: fixed; top: max(14px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
-    background: var(--panel); border: 1px solid var(--line); padding: 8px 14px; border-radius: 999px;
-    font-size: 13px; color: var(--muted); z-index: 5; backdrop-filter: blur(10px); white-space: nowrap; }
-  #status b { color: var(--accent); font-weight: 600; }
-
-  /* 컨트롤 패널 */
-  #panel { position: fixed; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); width: 280px; max-width: calc(100vw - 32px);
-    background: var(--panel); border: 1px solid var(--line); border-radius: 16px; z-index: 5;
-    backdrop-filter: blur(12px); font-size: 13px; }
-  #panel summary { list-style: none; cursor: pointer; padding: 12px 16px; font-weight: 600; display: flex; justify-content: space-between; }
-  #panel summary::-webkit-details-marker { display: none; }
-  #panel summary::after { content: "▾"; color: var(--muted); }
-  #panel[open] summary::after { content: "▴"; }
-  #panel .body { padding: 0 16px 14px; display: grid; gap: 11px; }
-  #panel label { display: grid; gap: 5px; color: var(--muted); }
-  #panel label span { display: flex; justify-content: space-between; }
-  #panel label span i { font-style: normal; color: var(--text); }
-  #panel input[type=range] { width: 100%; accent-color: var(--accent); }
-  #panel select { width: 100%; background: #111; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px; font-family: inherit; }
-  #panel .check { display: flex; align-items: center; gap: 8px; grid-template-columns: none; cursor: pointer; }
-  #panel .check input { accent-color: var(--accent); }
-  #panel .row { display: flex; gap: 8px; }
-  #panel .row button { flex: 1; appearance: none; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text);
-    border-radius: 10px; padding: 9px 6px; cursor: pointer; font-family: inherit; font-size: 13px; }
-  #panel .row button:hover { background: rgba(255,255,255,.12); }
-  #panel .reginfo { color: var(--muted); font-size: 12px; line-height: 1.5; }
-  #panel .reginfo b { color: var(--text); font-weight: 600; }
-
-  /* 전구 등록 */
-  #regCta { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 6;
-    box-shadow: 0 6px 30px rgba(255,200,97,.35); }
-  #reg { position: fixed; inset: 0; z-index: 8; display: grid; align-items: end; justify-items: center; padding: 16px 16px max(28px, env(safe-area-inset-bottom)); pointer-events: none; }
-  #reg .card { pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 22px 26px;
-    text-align: center; max-width: 360px; backdrop-filter: blur(12px); }
-  #reg .step { font-size: 12px; color: var(--accent); font-weight: 600; letter-spacing: .04em; }
-  #reg h2 { margin: 6px 0 6px; font-size: 22px; letter-spacing: -.01em; }
-  #reg p { margin: 0 0 14px; color: var(--muted); font-size: 14px; line-height: 1.55; }
-  #reg .count { font-size: 44px; font-weight: 800; color: var(--accent); line-height: 1.1; min-height: 50px; }
-  #reg .bar { height: 6px; background: rgba(255,255,255,.1); border-radius: 99px; overflow: hidden; margin-top: 10px; }
-  #reg .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
-  #reg .warn { color: #ff9b85; font-size: 13px; min-height: 18px; margin-top: 8px; }
-  #reg .cancel { margin-top: 8px; appearance: none; background: none; border: 0; color: var(--muted); cursor: pointer; font-family: inherit; text-decoration: underline; }
-  @media (max-width: 520px) { #panel { left: 16px; right: 16px; width: auto; } }
+  #panel { position: fixed; top: 8px; left: 8px; padding: 6px 8px; background: rgba(0,0,0,.6); display: grid; gap: 4px; }
+  #panel label { display: grid; grid-template-columns: 64px 120px 34px; align-items: center; gap: 6px; }
+  #panel span { color: var(--dim); }
+  #panel i { font-style: normal; text-align: right; }
+  #panel input { width: 100%; margin: 0; accent-color: #aaa; }
+  #err { position: fixed; bottom: 8px; left: 8px; color: #f66; }
 </style>
 </head>
 <body>
 <div id="stage">
   <video id="video" playsinline muted></video>
   <canvas id="gl"></canvas>
-  <canvas id="overlay"></canvas>
 </div>
-
-<div id="intro">
-  <div class="box">
-    <div class="bulb"></div>
-    <h1>전구 켜기</h1>
-    <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
-    <ul>
-      <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>동그란 초록 스티커</b>를 붙여 주세요. 스티커 가운데에 불이 켜져요.</li>
-      <li>초록은 피부·입술 색과 겹치지 않아서 잘 찾아요. 파랑·빨강 스티커도 설정에서 고를 수 있어요.</li>
-      <li>손 근처의 동그란 스티커만 찾기 때문에 빈손에는 반응하지 않아요.</li>
-      <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
-    </ul>
-    <button class="primary" id="start">카메라 켜고 시작</button>
-    <div id="err"></div>
-  </div>
+<div id="panel">
+  <label><span>전구밝기</span><input type="range" id="intensity" min="0.3" max="2.5" step="0.05" value="1.2"><i id="vIntensity"></i></label>
+  <label><span>빛크기</span><input type="range" id="size" min="0.4" max="2" step="0.05" value="1"><i id="vSize"></i></label>
+  <label><span>방어둡기</span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"><i id="vDark"></i></label>
 </div>
-
-<div id="status" hidden>준비 중…</div>
-<button class="primary" id="regCta" hidden>🔦 내 전구 등록하기 (6초)</button>
-<div id="reg" hidden>
-  <div class="card">
-    <div class="step" id="regStep"></div>
-    <h2 id="regTitle"></h2>
-    <p id="regDesc"></p>
-    <div class="count" id="regCount"></div>
-    <div class="bar"><i id="regBar"></i></div>
-    <div class="warn" id="regWarn"></div>
-    <button class="cancel" id="regCancel">취소</button>
-  </div>
-</div>
-
-<details id="panel" hidden open>
-  <summary>조명 설정</summary>
-  <div class="body">
-    <label>켜는 방식
-      <select id="mode">
-        <option value="hold">전구를 들고 있으면 켜짐</option>
-        <option value="raise">손을 위로 들면 켜짐</option>
-        <option value="click">클릭 / 스페이스바로 켜고 끄기</option>
-      </select>
-    </label>
-    <label><span>전구 밝기 <i id="vIntensity"></i></span><input type="range" id="intensity" min="0.3" max="2.5" step="0.05" value="1.2"></label>
-    <label><span>빛 크기 <i id="vSize"></i></span><input type="range" id="size" min="0.4" max="2" step="0.05" value="1"></label>
-    <label><span>방 어둡기 <i id="vDark"></i></span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"></label>
-    <label><span>색온도 <i id="vKelvin"></i></span><input type="range" id="kelvin" min="1800" max="6000" step="100" value="2700"></label>
-    <label><span>배경 그림자 <i id="vShadow"></i></span><input type="range" id="shadow" min="0" max="1" step="0.05" value="0.7"></label>
-    <label class="check"><input type="checkbox" id="virtual"> 화면에 가상 전구 겹쳐 그리기</label>
-    <label class="check"><input type="checkbox" id="sound" checked> 딸깍 소리</label>
-    <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
-    <label>스티커 색
-      <select id="dotPreset">
-        <option value="red">빨강</option>
-        <option value="green" selected>초록 (추천)</option>
-        <option value="blue">파랑</option>
-        <option value="custom" id="optCustom">직접 맞춘 색</option>
-      </select>
-    </label>
-    <div class="reginfo" id="regInfo"></div>
-    <div class="row">
-      <button id="regBtn">🎯 색 직접 맞추기</button>
-      <button id="regReset">맞춘 색 지우기</button>
-    </div>
-    <div class="row">
-      <button id="snap">📸 사진 저장</button>
-      <button id="toggle">💡 켜기/끄기</button>
-    </div>
-  </div>
-</details>
-
+<div id="err"></div>
 <script type="x-shader/x-vertex" id="vs">
 #version 300 es
 in vec2 p; out vec2 vUv;
@@ -273,23 +146,20 @@ import { FilesetResolver, HandLandmarker, ImageSegmenter }
   from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const $ = (id) => document.getElementById(id);
-const video = $("video"), glc = $("gl"), ovc = $("overlay");
-const statusEl = $("status");
+const video = $("video"), glc = $("gl");
 
-/* ---------------- 설정 ---------------- */
+/* ---------------- 설정 (슬라이더 3개 + 고정값) ---------------- */
 const ui = {};
-for (const id of ["mode","intensity","size","dark","kelvin","shadow","virtual","sound","debug","dotPreset"]) ui[id] = $(id);
+for (const id of ["intensity", "size", "dark"]) ui[id] = $(id);
+const CFG = { kelvin: 2700, shadow: 0.7 };
 function readUI() {
   $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
-  $("vSize").textContent = (+ui.size.value).toFixed(2) + "x";
-  $("vDark").textContent = Math.round(ui.dark.value * 100) + "%";
-  $("vKelvin").textContent = ui.kelvin.value + "K";
-  $("vShadow").textContent = Math.round(ui.shadow.value * 100) + "%";
+  $("vSize").textContent = (+ui.size.value).toFixed(2);
+  $("vDark").textContent = (+ui.dark.value).toFixed(2);
 }
-document.querySelectorAll("#panel input, #panel select").forEach(el => el.addEventListener("input", readUI));
+for (const id in ui) ui[id].addEventListener("input", readUI);
 readUI();
 
-// 색온도(K) → RGB (Tanner Helland 근사)
 function kelvinToRGB(k) {
   const t = k / 100; let r, g, b;
   r = t <= 66 ? 255 : 329.7 * Math.pow(t - 60, -0.1332);
@@ -339,33 +209,14 @@ function initGL() {
 
 /* ---------------- 상태 ---------------- */
 const S = { mask: null, maskW: 0, maskH: 0, hasMask: false, maskDirty: false };
-// 클릭 모드용 수동 전구
-const manual = { on: false, I: 0, flickerT: -1, L: { x: 0.5, y: 0.38 }, R: 0.07, dir: { x: 0, y: -1 } };
-// 손별 상태 (최대 2개, 왼손/오른손으로 구분)
 const hands = new Map();
 function newHand() {
   return { P: [], seen: false, lastSeen: 0, Lp: 0.1,
-    palm: { x: 0.5, y: 0.5 }, dir: { x: 0, y: -1 },   // palm: 화면비 보정 좌표
+    palm: { x: 0.5, y: 0.5 }, dir: { x: 0, y: -1 },
     dot: null, dotSeen: 0, dotHits: 0, hasBulb: false, dotArea: 0, roi: null,
     L: null, R: 0.04, on: false, I: 0, flickerT: -1 };
 }
 let handLM = null, segm = null, aspect = 16 / 9;
-
-/* ---------------- 소리 ---------------- */
-let actx = null;
-function click(on) {
-  if (!ui.sound.checked) return;
-  try {
-    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
-    const t = actx.currentTime, len = 0.04;
-    const b = actx.createBuffer(1, actx.sampleRate * len, actx.sampleRate), d = b.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 6);
-    const src = actx.createBufferSource(); src.buffer = b;
-    const f = actx.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = on ? 2600 : 1700; f.Q.value = 1.4;
-    const g = actx.createGain(); g.gain.value = 0.9;
-    src.connect(f).connect(g).connect(actx.destination); src.start(t);
-  } catch (e) {}
-}
 
 /* ---------------- 손 ---------------- */
 function updateHand(H, lms, now) {
@@ -395,30 +246,12 @@ function grabFrame() {
   const fh = Math.round(FW / aspect); if (frameC.height !== fh) frameC.height = fh;
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
-// 십자 색: 미리 정한 색(빨강/초록/파랑) 또는 화면에서 읽어 온 내 색
-// h: 색상(도), s: 채도 하한, v: 밝기 하한, tol: 색상 허용 범위
-const COLOR_KEY = "bulb-light-dot-v1", PRESET_KEY = "bulb-light-dot-preset";
-const PRESETS = {
-  red:   { h: 355, s: 0.5,  v: 0.22, tol: 16 },
-  green: { h: 125, s: 0.35, v: 0.18, tol: 30 },
-  blue:  { h: 215, s: 0.4,  v: 0.18, tol: 25 },
-};
-let customColor = null, dotColor = { ...PRESETS.red };
+// 스티커 색: 직접 맞춘 색이 저장돼 있으면 그 색, 아니면 초록
+let dotColor = { h: 125, s: 0.35, v: 0.18, tol: 30 };
 try {
-  ["bulb-light-reg-v1","bulb-light-reg-v2","bulb-light-reg-v3","bulb-light-reg-v4","bulb-light-reg-v5"].forEach(k => localStorage.removeItem(k));
-  const c = JSON.parse(localStorage.getItem(COLOR_KEY) || "null");
-  if (c && typeof c.h === "number") customColor = c;
-  const p = localStorage.getItem(PRESET_KEY);
-  if (p && (PRESETS[p] || (p === "custom" && customColor))) ui.dotPreset.value = p;
-  else ui.dotPreset.value = "green";
+  const c = JSON.parse(localStorage.getItem("bulb-light-dot-v1") || "null");
+  if (c && typeof c.h === "number") dotColor = c;
 } catch (e) {}
-function applyPreset() {
-  const p = ui.dotPreset.value;
-  dotColor = p === "custom" && customColor ? { ...customColor } : { ...(PRESETS[p] || PRESETS.red) };
-  $("optCustom").disabled = !customColor;
-  try { localStorage.setItem(PRESET_KEY, p); } catch (e) {}
-}
-applyPreset();
 
 function hsv(r, g, b) {
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
@@ -475,7 +308,6 @@ function findDot(H, now) {
   if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); compBuf = new Int32Array(n); }
   const m = maskBuf, sat = satBuf;
   for (let i = 0; i < n; i++) { const v = dotSat(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); sat[i] = v; m[i] = v > 0 ? 1 : 0; }
-  if (ui.debug.checked) H.dbgMask = { w, h, m: m.slice(0, n) }; else H.dbgMask = null;
   // 방금까지 따라가던 자리 (잠깐 흐려져서 십자 모양이 안 보여도 이 근처면 봐줌)
   const locked = H.dot && now - H.dotSeen < 400;
   const prev = H.dot ? { x: (1 - H.dot.x) * vw - x0, y: H.dot.y * vh - y0 } : null;
@@ -516,109 +348,16 @@ function findDot(H, now) {
   return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt, cross: best.aspect };
 }
 
-/* ---------------- 십자 색 직접 맞추기 (선택) ---------------- */
-const GUIDE = { x: 0.5, y: 0.4, s: 0.12 };
-const RS = { phase: null, t0: 0, samples: [] };
-const PHASES = {
-  prep: { next: "rec", dur: 3000, step: "준비", title: "스티커를 작은 원에 대 주세요", desc: "전구에 붙인 스티커가 화면 가운데 작은 원 안에 오도록 들어 주세요." },
-  rec:  { next: "done", dur: 2000, rec: true, step: "색 읽는 중", title: "스티커 색 읽는 중", desc: "그대로 잠깐만 들고 있어 주세요." },
-};
-function startReg() {
-  RS.samples = [];
-  setPhase("prep");
-  $("reg").hidden = false;
-}
-function setPhase(ph) {
-  RS.phase = ph; RS.t0 = performance.now();
-  if (ph === "done") {
-    $("reg").hidden = true; RS.phase = null;
-    const A = RS.samples;
-    let ok = false;
-    if (A.length >= 20) {
-      // 가장 많이 보인 색상대를 고름 (원 안에 배경이 조금 섞여도 괜찮게)
-      const hist = new Float32Array(36);
-      // 진한 픽셀일수록 크게 침. 피부·따뜻한 벽 색(15~45도)은 후보에서 뺌
-      for (const c of A) { const b = Math.floor(c.h / 10) % 36; if (c.h >= 15 && c.h <= 45) continue; hist[b] += c.s ** 4; }
-      let pb = 0; for (let i = 1; i < 36; i++) if (hist[i] > hist[pb]) pb = i;
-      const B = A.filter(c => hueDist(c.h, pb * 10 + 5) <= 25 && c.s > 0.5);
-      let sx = 0, sy = 0; for (const c of B) { sx += Math.cos(c.h * Math.PI / 180); sy += Math.sin(c.h * Math.PI / 180); }
-      let h = Math.atan2(sy, sx) * 180 / Math.PI; if (h < 0) h += 360;
-      if (B.length < 20) {
-        alert("스티커 색을 읽지 못했어요. 스티커가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
-      } else if (hueDist(h, 22) < 14) {
-        alert("피부색과 너무 비슷한 색이라 쓰기 어려워요. 초록이나 파랑 스티커를 추천해요.");
-      } else {
-        const ss = B.map(c => c.s).sort((a, b) => a - b), vv = B.map(c => c.v).sort((a, b) => a - b);
-        const dev = B.map(c => hueDist(c.h, h)).sort((a, b) => a - b);
-        customColor = { h, s: Math.max(0.3, ss[Math.floor(ss.length * 0.15)] * 0.75), v: Math.max(0.12, vv[Math.floor(vv.length * 0.15)] * 0.6),
-                        tol: Math.min(25, Math.max(12, dev[Math.floor(dev.length * 0.9)] + 6)) };
-        try { localStorage.setItem(COLOR_KEY, JSON.stringify(customColor)); } catch (e) {}
-        $("optCustom").disabled = false; ui.dotPreset.value = "custom"; applyPreset();
-        ok = true;
-      }
-    } else {
-      alert("스티커가 안 보여요. 스티커가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
-    }
-    refreshRegUI(); return;
-  }
-  const P = PHASES[ph];
-  $("regStep").textContent = P.step; $("regTitle").textContent = P.title; $("regDesc").textContent = P.desc;
-  $("regCount").textContent = ""; $("regBar").style.width = "0%";
-}
-function cancelReg() { RS.phase = null; $("reg").hidden = true; refreshRegUI(); }
-function stepReg(now) {
-  if (!RS.phase) return;
-  const P = PHASES[RS.phase], el = now - RS.t0;
-  $("regBar").style.width = Math.min(100, el / P.dur * 100) + "%";
-  if (P.rec) {
-    // 가운데 원 안에서 색이 진한 픽셀만 모음 (어떤 색이든)
-    grabFrame();
-    const vw = frameC.width, vh = frameC.height, r = Math.round(GUIDE.s * vh / 2);
-    const cx = Math.round((1 - GUIDE.x) * vw), cy = Math.round(GUIDE.y * vh);
-    const d = fctx.getImageData(cx - r, cy - r, r * 2, r * 2).data;
-    for (let y = 0; y < r * 2; y++) for (let x = 0; x < r * 2; x++) {
-      if ((x - r) ** 2 + (y - r) ** 2 > r * r) continue;
-      const i = (y * r * 2 + x) * 4, c = hsv(d[i], d[i + 1], d[i + 2]);
-      if (c.s > 0.4 && c.v > 0.15) RS.samples.push(c);
-    }
-    if (RS.samples.length > 4000) RS.samples.splice(0, RS.samples.length - 4000);
-    $("regCount").textContent = "";
-    $("regWarn").textContent = RS.samples.length < 20 ? "스티커가 안 보여요. 작은 원 안에 맞춰 주세요." : "";
-  } else {
-    $("regCount").textContent = Math.max(1, Math.ceil((P.dur - el) / 1000));
-    $("regWarn").textContent = "";
-  }
-  if (el >= P.dur) setPhase(P.next);
-}
-function refreshRegUI() {
-  const names = { red: "빨간", green: "초록", blue: "파란" }, p = ui.dotPreset.value;
-  const sw = '<i style="display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:-1px;background:hsl(' + Math.round(dotColor.h) + ',85%,50%)"></i> ';
-  $("regInfo").innerHTML = sw + (p === "custom"
-    ? "<b>직접 맞춘 색</b>의 스티커를 찾아요"
-    : "<b>" + names[p] + "</b> 스티커를 찾아요. 잘 안 잡히면 <b>색 직접 맞추기</b>를 해 보세요.");
-  updateStatus();
-}
-$("regBtn").addEventListener("click", startReg);
-$("regCancel").addEventListener("click", cancelReg);
-$("regReset").addEventListener("click", () => {
-  customColor = null;
-  try { localStorage.removeItem(COLOR_KEY); } catch (e) {}
-  if (ui.dotPreset.value === "custom") ui.dotPreset.value = "red";
-  applyPreset(); refreshRegUI();
-});
-ui.dotPreset.addEventListener("change", () => { applyPreset(); refreshRegUI(); });
-
 const visibleHands = () => [...hands.values()].filter(H => H.seen);
 
-// 손마다 매 프레임 빨간 점을 찾음. 2프레임 연속 보이면 켜고, 잠깐(0.2초) 가려지는 건 봐줌
+// 손마다 매 프레임 스티커를 찾음. 2프레임 연속 보이면 켜고, 잠깐(0.2초) 가려지는 건 봐줌
 function stepFind(now) {
-  if (RS.phase) { hands.forEach(H => { H.hasBulb = false; }); return; }
   for (const H of visibleHands()) {
     const r = findDot(H, now);
     if (r) {
       if (!H.dot || now - H.dotSeen > 300) H.dot = { x: r.x, y: r.y };
       else { const k = 0.7; H.dot.x += (r.x - H.dot.x) * k; H.dot.y += (r.y - H.dot.y) * k; }
-      H.dotSeen = now; H.dotArea = r.area; H.dotCross = r.cross;
+      H.dotSeen = now; H.dotArea = r.area;
       H.dotHits = Math.min(H.dotHits + 1, 10);
       if (H.dotHits >= 2) H.hasBulb = true;
     } else {
@@ -628,33 +367,25 @@ function stepFind(now) {
   }
 }
 
-/* ---------------- 켜짐 판단 + 깜빡임 ---------------- */
-const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];  // 켜질 때 파르르
-function bulbWanted(H) {
-  if (!H.seen || !H.hasBulb || !H.dot || RS.phase) return false;
-  const mode = ui.mode.value;
-  if (mode === "click") return false;
-  if (mode === "raise") return H.dot.y < 0.42;
-  return true;
-}
-function stepLight(o, want, idle, now, dt) {
-  if (want && !o.on) { o.on = true; o.flickerT = now; click(true); }
-  if (!want && o.on) { o.on = false; o.flickerT = -1; click(false); }
+/* ---------------- 켜짐 + 깜빡임 ---------------- */
+const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];
+function stepLight(o, want, now, dt) {
+  if (want && !o.on) { o.on = true; o.flickerT = now; }
+  if (!want && o.on) { o.on = false; o.flickerT = -1; }
   const max = +ui.intensity.value;
   if (o.on && o.flickerT >= 0) {
     const e = (now - o.flickerT) / 70 | 0;
     if (e < FLICKER.length) { o.I = FLICKER[e] * max; return; }
     o.flickerT = -1;
   }
-  const target = o.on ? max : idle;
+  const target = o.on ? max : 0;
   o.I += (target - o.I) * Math.min(1, dt * (o.on ? 10 : 7));
 }
 function stepHands(now, dt) {
   for (const [key, H] of hands) {
     if (H.seen && now - H.lastSeen > 250) { H.seen = false; H.hasBulb = false; }
-    stepLight(H, bulbWanted(H), 0, now, dt);   // 점이 없으면 아무 빛도 없음
+    stepLight(H, H.seen && H.hasBulb && !!H.dot, now, dt);
     if (H.dot) {
-      // 빛은 빨간 점 바로 그 자리. 지연을 줄이려고 거의 바로 따라감
       if (!H.L) H.L = { x: H.dot.x, y: H.dot.y };
       const k = Math.min(1, dt * 40);
       H.L.x += (H.dot.x - H.L.x) * k; H.L.y += (H.dot.y - H.L.y) * k;
@@ -663,53 +394,10 @@ function stepHands(now, dt) {
     H.R += (tR - H.R) * Math.min(1, dt * 12);
     if (!H.seen && H.I < 0.005) hands.delete(key);
   }
-  stepLight(manual, ui.mode.value === "click" && manual.on, 0, now, dt);
-}
-
-/* ---------------- 오버레이 (안내 원 + 디버그) ---------------- */
-const octx = ovc.getContext("2d"), dbgC = document.createElement("canvas");
-function drawOverlay() {
-  octx.clearRect(0, 0, ovc.width, ovc.height);
-  const W = ovc.width, H = ovc.height;
-  if (RS.phase) {
-    const r = GUIDE.s * H / 2, cx = GUIDE.x * W, cy = GUIDE.y * H, c = r * 0.5;
-    octx.lineWidth = 3; octx.strokeStyle = RS.phase === "rec" ? "#ffc861" : "rgba(255,255,255,.9)";
-    octx.setLineDash(RS.phase === "rec" ? [] : [8, 6]);
-    octx.beginPath(); octx.arc(cx, cy, r, 0, 7); octx.stroke(); octx.setLineDash([]);
-    octx.beginPath(); octx.moveTo(cx - c, cy); octx.lineTo(cx + c, cy); octx.moveTo(cx, cy - c); octx.lineTo(cx, cy + c); octx.stroke();
-  }
-  if (!ui.debug.checked) return;
-  const sx = W, sy = H;
-  for (const h of visibleHands()) {
-    octx.fillStyle = "#4cf";
-    for (const p of h.P) { octx.beginPath(); octx.arc(p.x * sx, p.y * sy, 4, 0, 7); octx.fill(); }
-    if (h.roi) {
-      // 점을 찾는 영역 (거울 기준으로 다시 그림)
-      const R = h.roi, rx = (1 - (R.x0 + R.w) / R.vw) * sx, ry = R.y0 / R.vh * sy;
-      octx.strokeStyle = "rgba(255,255,255,.35)"; octx.setLineDash([6, 6]); octx.lineWidth = 1.5;
-      octx.strokeRect(rx, ry, R.w / R.vw * sx, R.h / R.vh * sy); octx.setLineDash([]);
-      if (h.dbgMask && h.dbgMask.w === R.w && h.dbgMask.h === R.h) {
-        // 십자 색으로 인식된 픽셀 (하늘색)
-        const M = h.dbgMask, img = new ImageData(M.w, M.h);
-        for (let i = 0; i < M.m.length; i++) if (M.m[i]) { img.data[i * 4] = 0; img.data[i * 4 + 1] = 230; img.data[i * 4 + 2] = 255; img.data[i * 4 + 3] = 200; }
-        dbgC.width = M.w; dbgC.height = M.h; dbgC.getContext("2d").putImageData(img, 0, 0);
-        octx.save(); octx.translate(rx + R.w / R.vw * sx, ry); octx.scale(-1, 1);
-        octx.drawImage(dbgC, 0, 0, R.w / R.vw * sx, R.h / R.vh * sy); octx.restore();
-      }
-    }
-    if (h.dot) {
-      const fx = h.dot.x * sx, fy = h.dot.y * sy;
-      octx.strokeStyle = h.hasBulb ? "#ff5a5a" : "rgba(255,255,255,.6)"; octx.lineWidth = 2;
-      octx.beginPath(); octx.moveTo(fx - 12, fy); octx.lineTo(fx + 12, fy); octx.moveTo(fx, fy - 12); octx.lineTo(fx, fy + 12); octx.stroke();
-      octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(fx + 14, fy - 12, 120, 24);
-      octx.fillStyle = h.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 13px system-ui";
-      octx.fillText(h.hasBulb ? "스티커 찾음 · " + h.dotArea + "px" : "놓침", fx + 20, fy + 5);
-    }
-  }
 }
 
 /* ---------------- 메인 루프 ---------------- */
-let frame = 0, lastT = performance.now(), lastVideoTime = -1, fpsAcc = 0, fpsN = 0, fps = 0;
+let frame = 0, lastT = performance.now(), lastVideoTime = -1;
 function loop() {
   requestAnimationFrame(loop);
   const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
@@ -736,68 +424,46 @@ function loop() {
         const f = mk.getAsFloat32Array(), w = mk.width, h = mk.height;
         if (!S.mask || S.mask.length !== w * h) { S.mask = new Uint8Array(w * h); S.maskW = w; S.maskH = h; }
         const M = S.mask;
-        for (let i = 0; i < f.length; i++) M[i] = (M[i] * 0.4 + f[i] * 255 * 0.6) | 0;  // 시간축 스무딩
+        for (let i = 0; i < f.length; i++) M[i] = (M[i] * 0.4 + f[i] * 255 * 0.6) | 0;
         S.hasMask = true; S.maskDirty = true;
       });
     }
     stepFind(now);
-    stepReg(now);
   }
   stepHands(now, dt);
 
-  // 빛 목록 만들기
   const lights = [];
-  for (const H of hands.values()) if (H.L && H.I > 0.002) lights.push({ L: H.L, dir: H.dir, R: H.R, I: H.I, T: 1 });
-  if (manual.I > 0.002) lights.push({ L: manual.L, dir: manual.dir, R: manual.R, I: manual.I, T: 1 });
+  for (const H of hands.values()) if (H.L && H.I > 0.002) lights.push(H);
   const n = Math.min(MAXL, lights.length);
   const aL = new Float32Array(MAXL * 2), aD = new Float32Array(MAXL * 2), aR = new Float32Array(MAXL), aI = new Float32Array(MAXL), aT = new Float32Array(MAXL);
   for (let i = 0; i < n; i++) {
     const l = lights[i];
     aL[i * 2] = l.L.x; aL[i * 2 + 1] = l.L.y; aD[i * 2] = l.dir.x; aD[i * 2 + 1] = l.dir.y;
-    aR[i] = l.R; aI[i] = l.I; aT[i] = l.T;
+    aR[i] = l.R; aI[i] = l.I; aT[i] = 1;
   }
   const hp = new Float32Array(84); let hn = 0;
   for (const H of hands.values()) if (H.seen) for (const p of H.P) { if (hn < 42) { hp[hn * 2] = p.x; hp[hn * 2 + 1] = p.y; hn++; } }
 
-  // 렌더
   gl.viewport(0, 0, glc.width, glc.height);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texVideo);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texMask);
   if (S.maskDirty) { gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S.maskW, S.maskH, 0, gl.RED, gl.UNSIGNED_BYTE, S.mask); S.maskDirty = false; }
 
-  const dark = +ui.dark.value;
   gl.uniform1f(U.uAspect, aspect);
-  gl.uniform1f(U.uAmb, RS.phase ? 0.85 : Math.pow(1 - dark, 1.6));
-  gl.uniform1f(U.uShadow, +ui.shadow.value);
-  gl.uniform1f(U.uVirtual, ui.virtual.checked ? 1 : 0);
+  gl.uniform1f(U.uAmb, Math.pow(1 - +ui.dark.value, 1.6));
+  gl.uniform1f(U.uShadow, CFG.shadow);
+  gl.uniform1f(U.uVirtual, 0);
   gl.uniform1f(U.uHasMask, S.hasMask ? 1 : 0);
-  gl.uniform1f(U.uDebug, ui.debug.checked ? 1 : 0);
+  gl.uniform1f(U.uDebug, 0);
   gl.uniform1f(U.uTime, now / 1000);
-  gl.uniform3fv(U.uWarm, kelvinToRGB(+ui.kelvin.value));
+  gl.uniform3fv(U.uWarm, kelvinToRGB(CFG.kelvin));
   gl.uniform1i(U.uN, n);
   gl.uniform2fv(U.uL, aL); gl.uniform2fv(U.uDir, aD);
   gl.uniform1fv(U.uR, aR); gl.uniform1fv(U.uI, aI); gl.uniform1fv(U.uT, aT);
   gl.uniform2fv(U.uHand, hp);
   gl.uniform1i(U.uHandN, hn);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-  drawOverlay();
-
-  fpsAcc += dt; fpsN++;
-  if (fpsAcc > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; updateStatus(); }
-}
-
-function updateStatus() {
-  let msg;
-  const vis = visibleHands();
-  if (!handLM) msg = "인식 모델 불러오는 중…";
-  else if (RS.phase) msg = "스티커 색 맞추는 중…";
-  else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
-  else if (vis.some(H => H.on)) msg = "<b>💡 켜짐</b>";
-  else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
-  else msg = "스티커를 붙인 전구를 들어 주세요";
-  statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
 }
 
 /* ---------------- 시작 ---------------- */
@@ -818,17 +484,13 @@ async function loadModels() {
     }),
   ]);
   handLM = h; segm = s;
-  refreshRegUI();
 }
-
 function resize() {
   const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
   aspect = vw / vh;
-  glc.width = ovc.width = vw; glc.height = ovc.height = vh;
+  glc.width = vw; glc.height = vh;
 }
-
-$("start").addEventListener("click", async () => {
-  const btn = $("start"); btn.disabled = true; btn.textContent = "카메라 연결 중…"; $("err").textContent = "";
+(async () => {
   try {
     initGL();
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -836,36 +498,13 @@ $("start").addEventListener("click", async () => {
     });
     video.srcObject = stream; await video.play();
     resize(); video.addEventListener("resize", resize);
-    $("intro").hidden = true;
-    statusEl.hidden = false; $("panel").hidden = false;
-    if (innerWidth < 520) $("panel").open = false;
     requestAnimationFrame(loop);
-    refreshRegUI();
-    loadModels().catch(e => { console.error(e); statusEl.textContent = "인식 모델을 불러오지 못했어요. 새로고침해 주세요."; });
+    loadModels().catch(e => { console.error(e); $("err").textContent = "model load failed"; });
   } catch (e) {
     console.error(e);
-    btn.disabled = false; btn.textContent = "다시 시도";
-    $("err").textContent = e && e.name === "NotAllowedError"
-      ? "카메라 권한이 거부됐어요. 주소창의 카메라 아이콘에서 허용해 주세요."
-      : "카메라를 켤 수 없어요: " + (e.message || e);
+    $("err").textContent = "camera: " + (e.name || e.message || e);
   }
-});
-
-function toggleManual() {
-  ui.mode.value = "click"; manual.on = !manual.on; updateStatus();
-}
-$("toggle").addEventListener("click", toggleManual);
-$("stage").addEventListener("click", () => { if (ui.mode.value === "click") { manual.on = !manual.on; updateStatus(); } });
-addEventListener("keydown", (e) => { if (e.code === "Space" && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT") { e.preventDefault(); toggleManual(); } });
-ui.mode.addEventListener("change", updateStatus);
-
-$("snap").addEventListener("click", () => {
-  glc.toBlob((b) => {
-    const a = document.createElement("a"); a.href = URL.createObjectURL(b);
-    a.download = "bulb-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".png"; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  }, "image/png");
-});
+})();
 </script>
 </body>
 </html>
