@@ -96,9 +96,9 @@
     <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
     <ul>
       <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>진한 색 펜으로 점과 십자(+)</b>를 그려 주세요. 십자 가운데에 불이 켜져요.</li>
-      <li><b>초록이나 파랑</b>을 추천해요. 피부·입술 색과 겹치지 않아서 잘 찾아요.</li>
-      <li>십자 모양만 찾기 때문에 빈손에는 반응하지 않아요.</li>
+      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>동그란 초록 스티커</b>를 붙여 주세요. 스티커 가운데에 불이 켜져요.</li>
+      <li>초록은 피부·입술 색과 겹치지 않아서 잘 찾아요. 파랑·빨강 스티커도 설정에서 고를 수 있어요.</li>
+      <li>손 근처의 동그란 스티커만 찾기 때문에 빈손에는 반응하지 않아요.</li>
       <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
     </ul>
     <button class="primary" id="start">카메라 켜고 시작</button>
@@ -138,10 +138,10 @@
     <label class="check"><input type="checkbox" id="virtual"> 화면에 가상 전구 겹쳐 그리기</label>
     <label class="check"><input type="checkbox" id="sound" checked> 딸깍 소리</label>
     <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
-    <label>십자 색
+    <label>스티커 색
       <select id="dotPreset">
         <option value="red">빨강</option>
-        <option value="green">초록 (추천)</option>
+        <option value="green" selected>초록 (추천)</option>
         <option value="blue">파랑</option>
         <option value="custom" id="optCustom">직접 맞춘 색</option>
       </select>
@@ -410,6 +410,7 @@ try {
   if (c && typeof c.h === "number") customColor = c;
   const p = localStorage.getItem(PRESET_KEY);
   if (p && (PRESETS[p] || (p === "custom" && customColor))) ui.dotPreset.value = p;
+  else ui.dotPreset.value = "green";
 } catch (e) {}
 function applyPreset() {
   const p = ui.dotPreset.value;
@@ -458,7 +459,7 @@ function crossness(pix, cnt, w, cxp, cyp) {
   if (m < 1e-3) return { cross: 0, elong: 1, size: 0 };
   return { cross: Math.hypot(c4, s4) / NB / m, elong: Math.hypot(c2, s2) / NB / m, size: m };
 }
-// 손 주변에서 빨간 십자를 찾아 그 가운데를 돌려줌 (화면 좌표, 거울 기준)
+// 손 주변에서 동그란 스티커를 찾아 그 가운데를 돌려줌 (화면 좌표, 거울 기준)
 function findDot(H, now) {
   grabFrame();
   const vw = frameC.width, vh = frameC.height;
@@ -483,11 +484,12 @@ function findDot(H, now) {
   let best = null;
   for (let i = 0; i < n; i++) {
     if (m[i] !== 1) continue;
-    let sp = 0, cnt = 0, sx = 0, sy = 0, ss = 0;
+    let sp = 0, cnt = 0, sx = 0, sy = 0, ss = 0, ux = 0, uy = 0, uxx = 0, uyy = 0, uxy = 0;
     stackBuf[sp++] = i; m[i] = 2;
     while (sp) {
       const j = stackBuf[--sp], jx = j % w, jy = (j / w) | 0, wj = sat[j];
-      compBuf[cnt++] = j; sx += jx * wj; sy += jy * wj; ss += wj;
+      cnt++; sx += jx * wj; sy += jy * wj; ss += wj;
+      ux += jx; uy += jy; uxx += jx * jx; uyy += jy * jy; uxy += jx * jy;
       if (jx > 0 && m[j - 1] === 1) { m[j - 1] = 2; stackBuf[sp++] = j - 1; }
       if (jx < w - 1 && m[j + 1] === 1) { m[j + 1] = 2; stackBuf[sp++] = j + 1; }
       if (jy > 0 && m[j - w] === 1) { m[j - w] = 2; stackBuf[sp++] = j - w; }
@@ -495,25 +497,31 @@ function findDot(H, now) {
     }
     if (cnt < minArea || cnt > maxArea) continue;
     const bx = sx / ss, by = sy / ss;
-    const sh = crossness(compBuf, cnt, w, bx, by);
-    const isCross = sh.size >= 3 && sh.cross > 0.12 && sh.cross > sh.elong * 1.15;
+    // 동그란 스티커인지: 퍼진 모양으로 가로세로 비율(aspect)과 꽉 찬 정도(fill)를 잼
+    // 원 = 1:1, 기울인 스티커 = 2:1 정도, 길쭉한 잎·선 = 3:1 이상, 십자·얼룩 = fill 낮음
+    const mx = ux / cnt, my = uy / cnt;
+    const cxx = uxx / cnt - mx * mx, cyy = uyy / cnt - my * my, cxy = uxy / cnt - mx * my;
+    const tr = cxx + cyy, det = cxx * cyy - cxy * cxy, disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+    const l1 = tr / 2 + disc, l2 = Math.max(1e-6, tr / 2 - disc);
+    const aspect = Math.sqrt(l1 / l2), fill = cnt / (4 * Math.PI * Math.sqrt(l1 * l2));
+    const isRound = cnt >= 8 && aspect < 2.3 && fill > 0.75;
     const dPrev = prev ? Math.hypot(bx - prev.x, by - prev.y) : 1e9;
-    const keep = locked && dPrev < near && sh.elong < 0.35;    // 따라가던 십자가 잠깐 뭉개진 경우
-    if (!isCross && !keep) continue;
-    let score = (isCross ? 2 : 0) + sh.cross * 4 + Math.sqrt(cnt) * 0.05 - sh.elong;
+    const keep = locked && dPrev < near && aspect < 3.2;    // 따라가던 스티커가 잠깐 가려지거나 흐려진 경우
+    if (!isRound && !keep) continue;
+    let score = (isRound ? 2 : 0) + Math.min(fill, 1) + Math.sqrt(cnt) * 0.05 - (aspect - 1) * 0.8;
     if (prev) score -= dPrev / (H.Lp * vh) * 2;
-    if (!best || score > best.score) best = { score, bx, by, cnt, cross: sh.cross, elong: sh.elong, isCross };
+    if (!best || score > best.score) best = { score, bx, by, cnt, aspect };
   }
   if (!best) return null;
-  return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt, cross: best.cross, isCross: best.isCross };
+  return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt, cross: best.aspect };
 }
 
 /* ---------------- 십자 색 직접 맞추기 (선택) ---------------- */
 const GUIDE = { x: 0.5, y: 0.4, s: 0.12 };
 const RS = { phase: null, t0: 0, samples: [] };
 const PHASES = {
-  prep: { next: "rec", dur: 3000, step: "준비", title: "십자 가운데를 작은 원에 대 주세요", desc: "전구에 그린 십자가 화면 가운데 작은 원 안에 오도록 들어 주세요." },
-  rec:  { next: "done", dur: 2000, rec: true, step: "색 읽는 중", title: "십자 색 읽는 중", desc: "그대로 잠깐만 들고 있어 주세요." },
+  prep: { next: "rec", dur: 3000, step: "준비", title: "스티커를 작은 원에 대 주세요", desc: "전구에 붙인 스티커가 화면 가운데 작은 원 안에 오도록 들어 주세요." },
+  rec:  { next: "done", dur: 2000, rec: true, step: "색 읽는 중", title: "스티커 색 읽는 중", desc: "그대로 잠깐만 들고 있어 주세요." },
 };
 function startReg() {
   RS.samples = [];
@@ -536,9 +544,9 @@ function setPhase(ph) {
       let sx = 0, sy = 0; for (const c of B) { sx += Math.cos(c.h * Math.PI / 180); sy += Math.sin(c.h * Math.PI / 180); }
       let h = Math.atan2(sy, sx) * 180 / Math.PI; if (h < 0) h += 360;
       if (B.length < 20) {
-        alert("십자 색을 읽지 못했어요. 십자가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
+        alert("스티커 색을 읽지 못했어요. 스티커가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
       } else if (hueDist(h, 22) < 14) {
-        alert("피부색과 너무 비슷한 색이라 쓰기 어려워요. 초록이나 파랑 펜을 추천해요.");
+        alert("피부색과 너무 비슷한 색이라 쓰기 어려워요. 초록이나 파랑 스티커를 추천해요.");
       } else {
         const ss = B.map(c => c.s).sort((a, b) => a - b), vv = B.map(c => c.v).sort((a, b) => a - b);
         const dev = B.map(c => hueDist(c.h, h)).sort((a, b) => a - b);
@@ -549,7 +557,7 @@ function setPhase(ph) {
         ok = true;
       }
     } else {
-      alert("색이 진한 십자가 안 보여요. 십자가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
+      alert("스티커가 안 보여요. 스티커가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
     }
     refreshRegUI(); return;
   }
@@ -575,7 +583,7 @@ function stepReg(now) {
     }
     if (RS.samples.length > 4000) RS.samples.splice(0, RS.samples.length - 4000);
     $("regCount").textContent = "";
-    $("regWarn").textContent = RS.samples.length < 20 ? "색이 진한 십자가 안 보여요. 작은 원 안에 맞춰 주세요." : "";
+    $("regWarn").textContent = RS.samples.length < 20 ? "스티커가 안 보여요. 작은 원 안에 맞춰 주세요." : "";
   } else {
     $("regCount").textContent = Math.max(1, Math.ceil((P.dur - el) / 1000));
     $("regWarn").textContent = "";
@@ -586,8 +594,8 @@ function refreshRegUI() {
   const names = { red: "빨간", green: "초록", blue: "파란" }, p = ui.dotPreset.value;
   const sw = '<i style="display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:-1px;background:hsl(' + Math.round(dotColor.h) + ',85%,50%)"></i> ';
   $("regInfo").innerHTML = sw + (p === "custom"
-    ? "<b>직접 맞춘 색</b>의 십자를 찾아요"
-    : "<b>" + names[p] + "</b> 십자를 찾아요. 잘 안 잡히면 <b>색 직접 맞추기</b>를 해 보세요.");
+    ? "<b>직접 맞춘 색</b>의 스티커를 찾아요"
+    : "<b>" + names[p] + "</b> 스티커를 찾아요. 잘 안 잡히면 <b>색 직접 맞추기</b>를 해 보세요.");
   updateStatus();
 }
 $("regBtn").addEventListener("click", startReg);
@@ -695,7 +703,7 @@ function drawOverlay() {
       octx.beginPath(); octx.moveTo(fx - 12, fy); octx.lineTo(fx + 12, fy); octx.moveTo(fx, fy - 12); octx.lineTo(fx, fy + 12); octx.stroke();
       octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(fx + 14, fy - 12, 120, 24);
       octx.fillStyle = h.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 13px system-ui";
-      octx.fillText(h.hasBulb ? "십자 찾음 · " + Math.round((h.dotCross || 0) * 100) : "놓침", fx + 20, fy + 5);
+      octx.fillText(h.hasBulb ? "스티커 찾음 · " + h.dotArea + "px" : "놓침", fx + 20, fy + 5);
     }
   }
 }
@@ -784,11 +792,11 @@ function updateStatus() {
   let msg;
   const vis = visibleHands();
   if (!handLM) msg = "인식 모델 불러오는 중…";
-  else if (RS.phase) msg = "십자 색 맞추는 중…";
+  else if (RS.phase) msg = "스티커 색 맞추는 중…";
   else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
   else if (vis.some(H => H.on)) msg = "<b>💡 켜짐</b>";
   else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
-  else msg = "십자(+)를 그린 전구를 들어 주세요";
+  else msg = "스티커를 붙인 전구를 들어 주세요";
   statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
 }
 
