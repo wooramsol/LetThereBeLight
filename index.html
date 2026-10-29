@@ -476,7 +476,7 @@ async function loadModels() {
       runningMode: "VIDEO", numHands: 1, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
     }),
     mk(ImageSegmenter, {
-      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.task" },
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite" },
       runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
     }),
   ]);
