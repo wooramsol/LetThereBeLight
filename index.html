@@ -96,8 +96,8 @@
     <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
     <ul>
       <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>처음에 한 번 <b>내 전구를 등록</b>해 주세요. 화면 가운데 원 안에 전구를 6초만 비추면 돼요.</li>
-      <li>등록하면 빈손에는 반응하지 않고, 전구를 찾아서 그 자리에 불을 켜요.</li>
+      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>빨간 점</b>을 그려 주세요. 그 점에 불이 켜져요.</li>
+      <li>빨간 점이 없는 빈손에는 반응하지 않아요.</li>
       <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
     </ul>
     <button class="primary" id="start">카메라 켜고 시작</button>
@@ -130,6 +130,7 @@
       </select>
     </label>
     <label><span>전구 밝기 <i id="vIntensity"></i></span><input type="range" id="intensity" min="0.3" max="2.5" step="0.05" value="1.2"></label>
+    <label><span>빛 크기 <i id="vSize"></i></span><input type="range" id="size" min="0.4" max="2" step="0.05" value="1"></label>
     <label><span>방 어둡기 <i id="vDark"></i></span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"></label>
     <label><span>색온도 <i id="vKelvin"></i></span><input type="range" id="kelvin" min="1800" max="6000" step="100" value="2700"></label>
     <label><span>배경 그림자 <i id="vShadow"></i></span><input type="range" id="shadow" min="0" max="1" step="0.05" value="0.7"></label>
@@ -138,11 +139,8 @@
     <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
     <div class="reginfo" id="regInfo"></div>
     <div class="row">
-      <button id="regBtn">🔦 내 전구 등록</button>
-      <button id="regReset">등록 지우기</button>
-    </div>
-    <div class="row">
-      <button id="calib">📍 빛 위치 직접 맞추기</button>
+      <button id="regBtn">🎯 점 색 맞추기</button>
+      <button id="regReset">기본 색으로</button>
     </div>
     <div class="row">
       <button id="snap">📸 사진 저장</button>
@@ -262,7 +260,7 @@ void main(){
 </script>
 
 <script type="module">
-import { FilesetResolver, HandLandmarker, ImageSegmenter, ImageEmbedder }
+import { FilesetResolver, HandLandmarker, ImageSegmenter }
   from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -271,9 +269,10 @@ const statusEl = $("status");
 
 /* ---------------- 설정 ---------------- */
 const ui = {};
-for (const id of ["mode","intensity","dark","kelvin","shadow","virtual","sound","debug"]) ui[id] = $(id);
+for (const id of ["mode","intensity","size","dark","kelvin","shadow","virtual","sound","debug"]) ui[id] = $(id);
 function readUI() {
   $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
+  $("vSize").textContent = (+ui.size.value).toFixed(2) + "x";
   $("vDark").textContent = Math.round(ui.dark.value * 100) + "%";
   $("vKelvin").textContent = ui.kelvin.value + "K";
   $("vShadow").textContent = Math.round(ui.shadow.value * 100) + "%";
@@ -338,11 +337,8 @@ const hands = new Map();
 function newHand() {
   return { P: [], seen: false, lastSeen: 0, Lp: 0.1,
     palm: { x: 0.5, y: 0.5 }, dir: { x: 0, y: -1 },   // palm: 화면비 보정 좌표
-    // 찾은 전구 위치 (손 기준 좌표: a = 손가락 방향, b = 옆 방향, k = 크기, 모두 손 크기 단위)
-    found: null, hasBulb: false, score: 0, miss: 0,
-    queue: [], results: [], mode: "global",
-    bulbEst: { x: 0.5, y: 0.5 }, bulbR: 0.07, L: null, R: 0.05, type: 1,
-    on: false, I: 0, flickerT: -1 };
+    dot: null, dotSeen: 0, dotHits: 0, hasBulb: false, dotArea: 0, roi: null,
+    L: null, R: 0.04, on: false, I: 0, flickerT: -1 };
 }
 let handLM = null, segm = null, aspect = 16 / 9;
 
@@ -377,19 +373,11 @@ function updateHand(H, lms, now) {
   H.Lp += (Lp - H.Lp) * k;
   H.seen = true; H.lastSeen = now;
 }
-// 손 기준 좌표 (a: 손가락 방향, b: 옆 방향, 손 크기 단위) ↔ 화면 좌표
-function handToUV(H, a, b) {
-  const px = H.palm.x + (H.dir.x * a - H.dir.y * b) * H.Lp;
-  const py = H.palm.y + (H.dir.y * a + H.dir.x * b) * H.Lp;
-  return { x: px / aspect, y: py };
-}
 
-/* ---------------- 내 전구 등록 + 전구 찾기 (임베딩 + kNN) ---------------- */
-const crop = document.createElement("canvas"); crop.width = crop.height = 160;
-const cctx = crop.getContext("2d");
-// 영상 한 프레임을 작게 한 번만 복사해 두고, 거기서 여러 번 잘라 씀 (빠름)
+/* ---------------- 빨간 점 찾기 ---------------- */
+// 영상 한 프레임을 작게 한 번 복사해 두고, 손 주변만 읽어서 씀
 const frameC = document.createElement("canvas"); frameC.width = 640; frameC.height = 360;
-const fctx = frameC.getContext("2d");
+const fctx = frameC.getContext("2d", { willReadFrequently: true });
 let frameGrabbed = -1;
 function grabFrame() {
   if (frameGrabbed === frame) return;
@@ -397,193 +385,112 @@ function grabFrame() {
   const fh = Math.round(640 / aspect); if (frameC.height !== fh) frameC.height = fh;
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
-let embedder = null;
-const REG_KEY = "bulb-light-reg-v5";
-const reg = { pos: [], neg: [], ratio: 1.6, tpl: [], corr: { a: 0, b: 0 } };   // tpl = 전구 모양, corr = 클릭으로 맞춘 보정값   // tpl = 필라멘트 주변 모양 (정밀 위치 맞추기용)   // pos = 전구, neg = 배경(자동), ratio = 전구 크기 / 손 크기
+// 점 색 (등록하면 내 점 색으로 바뀜). h: 색상(도), s: 채도 하한, v: 밝기 하한, tol: 색상 허용 범위
+const COLOR_KEY = "bulb-light-dot-v1";
+const DEFAULT_COLOR = { h: 355, s: 0.5, v: 0.22, tol: 16 };
+let dotColor = { ...DEFAULT_COLOR }, colorCustom = false;
+try {
+  ["bulb-light-reg-v1","bulb-light-reg-v2","bulb-light-reg-v3","bulb-light-reg-v4","bulb-light-reg-v5"].forEach(k => localStorage.removeItem(k));
+  const c = JSON.parse(localStorage.getItem(COLOR_KEY) || "null");
+  if (c && typeof c.h === "number") { dotColor = c; colorCustom = true; }
+} catch (e) {}
 
-// 화면 좌표 (x, y: 거울 기준 0~1, s: 화면 높이 대비 크기) 의 정사각형을 잘라 임베딩
-function embedWin(x, y, s) {
+function hsv(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d > 0) {
+    if (mx === r) h = 60 * (((g - b) / d) % 6);
+    else if (mx === g) h = 60 * ((b - r) / d + 2);
+    else h = 60 * ((r - g) / d + 4);
+    if (h < 0) h += 360;
+  }
+  return { h, s: mx ? d / mx : 0, v: mx / 255 };
+}
+const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+// 점 색이면 채도를, 아니면 0을 돌려줌
+function dotSat(r, g, b) {
+  const c = hsv(r, g, b);
+  return c.s >= dotColor.s && c.v >= dotColor.v && hueDist(c.h, dotColor.h) <= dotColor.tol ? c.s : 0;
+}
+let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0), satBuf = new Float32Array(0);
+// 손 주변에서 점 색 덩어리를 찾아 그 무게중심을 돌려줌 (화면 좌표, 거울 기준)
+function findDot(H) {
   grabFrame();
   const vw = frameC.width, vh = frameC.height;
-  const size = s * vh, cx = (1 - x) * vw, cy = y * vh;
-  cctx.fillStyle = "#000"; cctx.fillRect(0, 0, crop.width, crop.height);
-  cctx.drawImage(frameC, cx - size / 2, cy - size / 2, size, size, 0, 0, crop.width, crop.height);
-  return Float32Array.from(embedder.embed(crop).embeddings[0].floatEmbedding);
-}
-/* 전구 모양 맞추기: 전구 창을 32x32 윤곽선(밝기 변화량) 그림으로 줄인 뒤,
-   등록 때 저장한 전구 전체 모양(여러 각도)을 대 보며 가장 잘 맞는 자리 = 전구 가운데 */
-const NCC_N = 32, TPL = 22, NCC_R = 4, NCC_TH = 0.4;
-const nccC = document.createElement("canvas"); nccC.width = nccC.height = NCC_N;
-const nctx = nccC.getContext("2d", { willReadFrequently: true });
-function edgeWin(x, y, s) {
-  grabFrame();
-  const vw = frameC.width, vh = frameC.height, size = s * vh, cx = (1 - x) * vw, cy = y * vh;
-  nctx.fillStyle = "#000"; nctx.fillRect(0, 0, NCC_N, NCC_N);
-  nctx.drawImage(frameC, cx - size / 2, cy - size / 2, size, size, 0, 0, NCC_N, NCC_N);
-  const d = nctx.getImageData(0, 0, NCC_N, NCC_N).data, g = new Float32Array(NCC_N * NCC_N);
-  for (let i = 0; i < g.length; i++) g[i] = d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11;
-  // 윤곽선(유리 테두리, 소켓, 필라멘트 선)만 남김 → 유리 너머 배경 밝기에 덜 흔들림
-  const e = new Float32Array(NCC_N * NCC_N);
-  for (let yy = 1; yy < NCC_N - 1; yy++) for (let xx = 1; xx < NCC_N - 1; xx++) {
-    const i = yy * NCC_N + xx;
-    const gx = g[i + 1 - NCC_N] + 2 * g[i + 1] + g[i + 1 + NCC_N] - g[i - 1 - NCC_N] - 2 * g[i - 1] - g[i - 1 + NCC_N];
-    const gy = g[i + NCC_N - 1] + 2 * g[i + NCC_N] + g[i + NCC_N + 1] - g[i - NCC_N - 1] - 2 * g[i - NCC_N] - g[i - NCC_N + 1];
-    e[i] = Math.sqrt(gx * gx + gy * gy);
-  }
-  return e;
-}
-function sampleAt(e, x, y) {
-  x = Math.max(0, Math.min(NCC_N - 1.001, x)); y = Math.max(0, Math.min(NCC_N - 1.001, y));
-  const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * NCC_N + x0;
-  return (e[i] * (1 - fx) + e[i + 1] * fx) * (1 - fy) + (e[i + NCC_N] * (1 - fx) + e[i + NCC_N + 1] * fx) * fy;
-}
-// 등록한 전구 모양을 -20도, 0도, +20도로 돌려서 템플릿 3장
-function makeTpls(e) {
-  const out = [], c = (NCC_N - 1) / 2, h = (TPL - 1) / 2;
-  for (const deg of [-20, 0, 20]) {
-    const th = deg * Math.PI / 180, cs = Math.cos(th), sn = Math.sin(th);
-    const t = new Float32Array(TPL * TPL); let m = 0;
-    for (let v = 0; v < TPL; v++) for (let u = 0; u < TPL; u++) {
-      const px = u - h, py = v - h, val = sampleAt(e, c + cs * px - sn * py, c + sn * px + cs * py);
-      t[v * TPL + u] = val; m += val;
-    }
-    m /= t.length; let sd = 0;
-    for (let i = 0; i < t.length; i++) { t[i] -= m; sd += t[i] * t[i]; }
-    sd = Math.sqrt(sd) || 1;
-    for (let i = 0; i < t.length; i++) t[i] /= sd;
-    out.push(t);
-  }
-  return out;
-}
-function nccAt(g, t, ox, oy) {
-  const n = TPL * TPL; let m = 0;
-  for (let y = 0; y < TPL; y++) { const r = (oy + y) * NCC_N + ox; for (let x = 0; x < TPL; x++) m += g[r + x]; }
-  m /= n; let sd = 0, c = 0;
-  for (let y = 0; y < TPL; y++) { const r = (oy + y) * NCC_N + ox, tr = y * TPL; for (let x = 0; x < TPL; x++) { const v = g[r + x] - m; sd += v * v; c += t[tr + x] * v; } }
-  sd = Math.sqrt(sd);
-  return sd < 1e-3 ? -1 : c / sd;
-}
-// 창 가운데 기준으로 전구 가운데가 몇 칸 어긋나 있는지 (32칸 기준, 칸보다 정밀하게) + 일치도
-function nccSearch(g, tpls) {
-  const o0 = (NCC_N - TPL) >> 1, n = TPL * TPL;
-  let best = { score: -1, ox: o0, oy: o0, ti: 0 };
-  for (let oy = o0 - NCC_R; oy <= o0 + NCC_R; oy++) for (let ox = o0 - NCC_R; ox <= o0 + NCC_R; ox++) {
-    let m = 0;
-    for (let y = 0; y < TPL; y++) { const r = (oy + y) * NCC_N + ox; for (let x = 0; x < TPL; x++) m += g[r + x]; }
-    m /= n;
-    let sd = 0;
-    for (let y = 0; y < TPL; y++) { const r = (oy + y) * NCC_N + ox; for (let x = 0; x < TPL; x++) { const v = g[r + x] - m; sd += v * v; } }
-    sd = Math.sqrt(sd); if (sd < 1e-3) continue;
-    for (let ti = 0; ti < tpls.length; ti++) {
-      const t = tpls[ti]; let c = 0;
-      for (let y = 0; y < TPL; y++) { const r = (oy + y) * NCC_N + ox, tr = y * TPL; for (let x = 0; x < TPL; x++) c += t[tr + x] * (g[r + x] - m); }
-      c /= sd;
-      if (c > best.score) best = { score: c, ox, oy, ti };
-    }
-  }
-  // 포물선 보간으로 칸 사이 위치까지 계산
-  const t = tpls[best.ti]; let fx = 0, fy = 0;
-  if (best.ox > 0 && best.ox + TPL < NCC_N) {
-    const l = nccAt(g, t, best.ox - 1, best.oy), r = nccAt(g, t, best.ox + 1, best.oy), d = l - 2 * best.score + r;
-    if (d < 0) fx = Math.max(-0.5, Math.min(0.5, 0.5 * (l - r) / d));
-  }
-  if (best.oy > 0 && best.oy + TPL < NCC_N) {
-    const u = nccAt(g, t, best.ox, best.oy - 1), b = nccAt(g, t, best.ox, best.oy + 1), d = u - 2 * best.score + b;
-    if (d < 0) fy = Math.max(-0.5, Math.min(0.5, 0.5 * (u - b) / d));
-  }
-  return { score: best.score, dx: best.ox - o0 + fx, dy: best.oy - o0 + fy };
-}
-function uvToHand(H, p) {
-  const dx = p.x * aspect - H.palm.x, dy = p.y - H.palm.y;
-  return { a: (dx * H.dir.x + dy * H.dir.y) / H.Lp, b: (-dx * H.dir.y + dy * H.dir.x) / H.Lp };
-}
-function refineFilament(H, now) {
-  if (!reg.tpl.length || !H.found) return;
-  const c = handToUV(H, H.found.a, H.found.b);
-  // 크기 3단계로 대 보고 가장 잘 맞는 크기·위치를 고름 → 전구 크기도 같이 바로잡힘
+  const r = 3.2 * H.Lp * vh;
+  const cx = (1 - H.palm.x / aspect) * vw, cy = H.palm.y * vh;
+  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(vw, Math.ceil(cx + r));
+  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(vh, Math.ceil(cy + r));
+  const w = x1 - x0, h = y1 - y0;
+  H.roi = { x0, y0, w, h, vw, vh };
+  if (w < 4 || h < 4) return null;
+  const d = fctx.getImageData(x0, y0, w, h).data;
+  const n = w * h;
+  if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); }
+  const m = maskBuf, sat = satBuf;
+  for (let i = 0; i < n; i++) { const v = dotSat(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); sat[i] = v; m[i] = v > 0 ? 1 : 0; }
+  // 덩어리(연결된 픽셀)마다 크기와 무게중심 계산
+  const prev = H.dot ? { x: (1 - H.dot.x) * vw - x0, y: H.dot.y * vh - y0 } : null;
+  const minArea = 3, maxArea = Math.max(60, (H.Lp * vh * 0.9) ** 2);
   let best = null;
-  for (const f of [0.8, 1, 1.25]) {
-    const s = H.found.k * H.Lp * f;
-    const r = nccSearch(edgeWin(c.x, c.y, s), reg.tpl);
-    const sc = r.score + (f === 1 ? 0.01 : 0);
-    if (!best || sc > best.sc) best = { score: r.score, dx: r.dx, dy: r.dy, sc, f, s };
+  for (let i = 0; i < n; i++) {
+    if (m[i] !== 1) continue;
+    let sp = 0, cnt = 0, sx = 0, sy = 0, ss = 0;
+    stackBuf[sp++] = i; m[i] = 2;
+    while (sp) {
+      const j = stackBuf[--sp], jx = j % w, jy = (j / w) | 0, wj = sat[j];
+      cnt++; sx += jx * wj; sy += jy * wj; ss += wj;
+      if (jx > 0 && m[j - 1] === 1) { m[j - 1] = 2; stackBuf[sp++] = j - 1; }
+      if (jx < w - 1 && m[j + 1] === 1) { m[j + 1] = 2; stackBuf[sp++] = j + 1; }
+      if (jy > 0 && m[j - w] === 1) { m[j - w] = 2; stackBuf[sp++] = j - w; }
+      if (jy < h - 1 && m[j + w] === 1) { m[j + w] = 2; stackBuf[sp++] = j + w; }
+    }
+    if (cnt < minArea || cnt > maxArea) continue;
+    const bx = sx / ss, by = sy / ss, ms = ss / cnt;
+    // 색이 진할수록(입술·피부처럼 흐린 빨강은 불리), 크게 보일수록, 손과 지난번 점에 가까울수록 좋음
+    let score = Math.sqrt(cnt) * ms * ms * ms * ms;
+    score -= Math.hypot(bx - (cx - x0), by - (cy - y0)) / (H.Lp * vh) * 0.8;
+    if (prev) score -= Math.hypot(bx - prev.x, by - prev.y) / (H.Lp * vh) * 4;
+    if (!best || score > best.score) best = { score, bx, by, cnt };
   }
-  H.ncc = best.score;
-  if (best.score < NCC_TH) return;
-  // 잘라낸 그림은 거울 반대라 x 방향을 뒤집어 줌
-  const p = { x: c.x - (best.dx / NCC_N) * best.s / aspect, y: c.y + (best.dy / NCC_N) * best.s };
-  const h = uvToHand(H, p), t = 0.55;
-  H.found.a += (h.a - H.found.a) * t; H.found.b += (h.b - H.found.b) * t;
-  H.found.k *= 1 + (best.f - 1) * 0.5;
-  H.nccT = now;
+  if (!best) return null;
+  return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt };
 }
 
-function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
-function classify(e) {
-  const all = [];
-  for (const v of reg.pos) all.push([dot(e, v), 1]);
-  for (const v of reg.neg) all.push([dot(e, v), 0]);
-  all.sort((a, b) => b[0] - a[0]);
-  const k = Math.min(7, all.length);
-  let w = 0, sum = 0;
-  for (let i = 0; i < k; i++) { const wi = Math.max(1e-3, all[i][0]); w += wi; sum += wi * all[i][1]; }
-  return sum / w;
-}
-const isRegistered = () => reg.pos.length >= 10 && reg.neg.length >= 10;
-
-function f32ToB64(arrs) {
-  const dim = arrs[0].length, buf = new Float32Array(dim * arrs.length);
-  arrs.forEach((a, i) => buf.set(a, i * dim));
-  let bin = ""; const u = new Uint8Array(buf.buffer);
-  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
-  return { dim, n: arrs.length, b64: btoa(bin) };
-}
-function b64ToF32(o) {
-  const bin = atob(o.b64), u = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
-  const all = new Float32Array(u.buffer), out = [];
-  for (let i = 0; i < o.n; i++) out.push(all.slice(i * o.dim, (i + 1) * o.dim));
-  return out;
-}
-function saveReg() {
-  try { localStorage.setItem(REG_KEY, JSON.stringify({ pos: f32ToB64(reg.pos), neg: f32ToB64(reg.neg), ratio: reg.ratio, tpl: reg.tpl.length ? f32ToB64(reg.tpl) : null, corr: reg.corr })); } catch (e) {}
-}
-function loadReg() {
-  try {
-    localStorage.removeItem("bulb-light-reg-v1"); localStorage.removeItem("bulb-light-reg-v2"); localStorage.removeItem("bulb-light-reg-v3"); localStorage.removeItem("bulb-light-reg-v4");   // 예전 방식 데이터는 지움
-    const o = JSON.parse(localStorage.getItem(REG_KEY) || "null");
-    if (o && o.pos && o.neg) { reg.pos = b64ToF32(o.pos); reg.neg = b64ToF32(o.neg); reg.ratio = o.ratio || 1.6; reg.tpl = o.tpl ? b64ToF32(o.tpl) : []; reg.corr = o.corr || { a: 0, b: 0 }; }
-  } catch (e) { reg.pos = []; reg.neg = []; }
-}
-loadReg();
-
-// 등록: 화면 가운데 원 안에 전구를 맞추면 그 부분 = 전구, 나머지 화면 = 배경
-const GUIDE = { x: 0.5, y: 0.4, s: 0.34 };
-const RS = { phase: null, t0: 0, last: 0, lastT: 0, tmpPos: [], tmpNeg: [], ratios: [], tmpTpl: [] };
+/* ---------------- 점 색 맞추기 (선택) ---------------- */
+const GUIDE = { x: 0.5, y: 0.4, s: 0.12 };
+const RS = { phase: null, t0: 0, samples: [] };
 const PHASES = {
-  prep: { next: "rec", dur: 3000, step: "준비", title: "전구를 원 안에 넣어 주세요", desc: "전구 유리의 가운데가 십자(+) 근처에 오도록, 전구 전체가 원 안에 들어오게 들어 주세요." },
-  rec:  { next: "done", dur: 6000, rec: true, step: "기록 중", title: "전구 기록 중", desc: "원 안에서 전구를 조금씩 돌리고 기울여 주세요." },
+  prep: { next: "rec", dur: 3000, step: "준비", title: "빨간 점을 십자(+)에 대 주세요", desc: "전구에 그린 빨간 점이 화면 가운데 작은 원 안에 오도록 들어 주세요." },
+  rec:  { next: "done", dur: 2000, rec: true, step: "색 읽는 중", title: "점 색 읽는 중", desc: "그대로 잠깐만 들고 있어 주세요." },
 };
 function startReg() {
-  if (!embedder) { alert("인식 모델을 아직 불러오는 중이에요. 잠시 후 다시 눌러 주세요."); return; }
-  RS.tmpPos = []; RS.tmpNeg = []; RS.ratios = []; RS.tmpTpl = [];
+  RS.samples = [];
   setPhase("prep");
-  $("reg").hidden = false; $("regCta").hidden = true;
+  $("reg").hidden = false;
 }
 function setPhase(ph) {
   RS.phase = ph; RS.t0 = performance.now();
   if (ph === "done") {
     $("reg").hidden = true; RS.phase = null;
-    if (RS.tmpPos.length >= 10 && RS.tmpNeg.length >= 10) {
-      reg.pos = RS.tmpPos; reg.neg = RS.tmpNeg; reg.corr = { a: 0, b: 0 };
-      if (RS.ratios.length >= 3) { const r = RS.ratios.sort((a, b) => a - b); reg.ratio = r[r.length >> 1]; }
-      // 전구 모양은 고르게 6장 (각각 3가지 각도) = 템플릿 18장
-      const T = RS.tmpTpl, nT = Math.min(6, T.length); reg.tpl = [];
-      for (let i = 0; i < nT; i++) reg.tpl.push(...T[Math.floor(i * T.length / nT)]);
-      saveReg();
-      hands.forEach(H => { H.found = null; H.hasBulb = false; H.queue = []; H.mode = "global"; });
+    const A = RS.samples;
+    if (A.length >= 20) {
+      // 색상은 원형 평균, 채도·밝기는 하위 값 기준으로 여유 있게
+      let sx = 0, sy = 0; for (const c of A) { sx += Math.cos(c.h * Math.PI / 180); sy += Math.sin(c.h * Math.PI / 180); }
+      let h = Math.atan2(sy, sx) * 180 / Math.PI; if (h < 0) h += 360;
+      if (hueDist(h, 0) > 18) { RS.samples = []; }   // 빨강에서 너무 벗어나면(피부색 쪽) 실패 처리
+    }
+    if (A.length >= 20 && RS.samples.length) {
+      let sx = 0, sy = 0; for (const c of A) { sx += Math.cos(c.h * Math.PI / 180); sy += Math.sin(c.h * Math.PI / 180); }
+      let h = Math.atan2(sy, sx) * 180 / Math.PI; if (h < 0) h += 360;
+      const ss = A.map(c => c.s).sort((a, b) => a - b), vv = A.map(c => c.v).sort((a, b) => a - b);
+      const dev = A.map(c => hueDist(c.h, h)).sort((a, b) => a - b);
+      dotColor = { h, s: Math.max(0.4, ss[Math.floor(ss.length * 0.15)] * 0.75), v: Math.max(0.12, vv[Math.floor(vv.length * 0.15)] * 0.6),
+                   tol: Math.min(20, Math.max(10, dev[Math.floor(dev.length * 0.9)] + 6)) };
+      colorCustom = true;
+      try { localStorage.setItem(COLOR_KEY, JSON.stringify(dotColor)); } catch (e) {}
     } else {
-      alert("등록하지 못했어요. 다시 시도해 주세요.");
+      alert("점 색을 읽지 못했어요. 빨간 점이 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
     }
     refreshRegUI(); return;
   }
@@ -597,25 +504,19 @@ function stepReg(now) {
   const P = PHASES[RS.phase], el = now - RS.t0;
   $("regBar").style.width = Math.min(100, el / P.dur * 100) + "%";
   if (P.rec) {
-    $("regCount").textContent = RS.tmpPos.length + "장";
-    if (embedder && now - RS.last > 90) {
-      RS.last = now;
-      // 전구: 원 부분 (살짝씩 흔들어서 여러 각도로)
-      const j = () => (Math.random() - 0.5) * 0.06;
-      RS.tmpPos.push(embedWin(GUIDE.x + j() / aspect, GUIDE.y + j(), GUIDE.s * (0.92 + Math.random() * 0.16)));
-      // 배경: 원에서 떨어진 곳 아무데나 (손이 찍혀도 괜찮음)
-      for (let t = 0, n = 0; t < 20 && n < 2; t++) {
-        const s = 0.18 + Math.random() * 0.3;
-        const x = s / aspect / 2 + Math.random() * (1 - s / aspect), y = s / 2 + Math.random() * (1 - s);
-        if (Math.hypot((x - GUIDE.x) * aspect, y - GUIDE.y) < GUIDE.s * 0.85) continue;
-        RS.tmpNeg.push(embedWin(x, y, s)); n++;
-      }
-      if (now - RS.lastT > 250) { RS.lastT = now; RS.tmpTpl.push(makeTpls(edgeWin(GUIDE.x, GUIDE.y, GUIDE.s))); }
-      // 전구 크기와 손 크기의 비율 (찾을 때 창 크기로 씀)
-      const vis = visibleHands();
-      if (vis.length) { const H = vis.reduce((a, b) => (b.Lp > a.Lp ? b : a)); RS.ratios.push(GUIDE.s / H.Lp); }
+    // 가운데 원 안에서 채도 높은(색이 진한) 픽셀만 모음
+    grabFrame();
+    const vw = frameC.width, vh = frameC.height, r = Math.round(GUIDE.s * vh / 2);
+    const cx = Math.round((1 - GUIDE.x) * vw), cy = Math.round(GUIDE.y * vh);
+    const d = fctx.getImageData(cx - r, cy - r, r * 2, r * 2).data;
+    for (let y = 0; y < r * 2; y++) for (let x = 0; x < r * 2; x++) {
+      if ((x - r) ** 2 + (y - r) ** 2 > r * r) continue;
+      const i = (y * r * 2 + x) * 4, c = hsv(d[i], d[i + 1], d[i + 2]);
+      if (c.s > 0.45 && c.v > 0.15 && (c.h < 22 || c.h > 320)) RS.samples.push(c);   // 진한 빨강만 (피부·주황빛 배경 제외)
     }
-    $("regWarn").textContent = "";
+    if (RS.samples.length > 4000) RS.samples.splice(0, RS.samples.length - 4000);
+    $("regCount").textContent = "";
+    $("regWarn").textContent = RS.samples.length < 20 ? "빨간 점이 안 보여요. 작은 원 안에 맞춰 주세요." : "";
   } else {
     $("regCount").textContent = Math.max(1, Math.ceil((P.dur - el) / 1000));
     $("regWarn").textContent = "";
@@ -623,98 +524,46 @@ function stepReg(now) {
   if (el >= P.dur) setPhase(P.next);
 }
 function refreshRegUI() {
-  const ok = isRegistered();
-  $("regInfo").innerHTML = ok
-    ? "<b>전구 등록됨</b> · 전구 " + reg.pos.length + "장 / 배경 " + reg.neg.length + "장"
-    : "아직 등록된 전구가 없어요. 등록해야 전구를 들었을 때 켜져요.";
-  $("regCta").hidden = ok || !!RS.phase || $("panel").hidden;
+  $("regInfo").innerHTML = colorCustom
+    ? "<b>점 색 맞춤 완료</b> · 내 빨간 점 색으로 찾아요"
+    : "기본 빨간색으로 찾아요. 잘 안 잡히면 <b>점 색 맞추기</b>를 해 보세요.";
   updateStatus();
 }
 $("regBtn").addEventListener("click", startReg);
-$("regCta").addEventListener("click", startReg);
 $("regCancel").addEventListener("click", cancelReg);
 $("regReset").addEventListener("click", () => {
-  reg.pos = []; reg.neg = []; try { localStorage.removeItem(REG_KEY); } catch (e) {}
-  hands.forEach(H => { H.found = null; H.hasBulb = false; H.queue = []; });
+  dotColor = { ...DEFAULT_COLOR }; colorCustom = false;
+  try { localStorage.removeItem(COLOR_KEY); } catch (e) {}
   refreshRegUI();
 });
 
 const visibleHands = () => [...hands.values()].filter(H => H.seen);
 
-/* 손 주변을 창 여러 개로 훑어서 등록한 전구와 가장 닮은 자리를 찾음.
-   - 못 찾은 상태: 손 주변 넓게 (global)
-   - 찾은 상태: 지난 자리 근처만 촘촘히 (local) → 빠르고 정확하게 따라감
-   프레임마다 몇 개씩만 계산해서 화면이 끊기지 않게 함 */
-const FIND_TH = 0.6, PER_FRAME = 4;
-function planSearch(H) {
-  const q = [];
-  if (H.found && H.mode === "local") {
-    const f = H.found, st = f.k * 0.28;
-    for (const da of [-st, 0, st]) for (const db of [-st, 0, st]) q.push({ a: f.a + da, b: f.b + db, k: f.k });
-    q.push({ a: f.a, b: f.b, k: f.k * 0.82 }, { a: f.a, b: f.b, k: f.k * 1.2 });
-  } else {
-    const k0 = reg.ratio;
-    for (const a of [0.2, 0.9, 1.6, 2.3]) for (const b of [-1.5, -0.5, 0.5, 1.5])
-      for (const k of [k0 * 0.8, k0 * 1.15]) q.push({ a, b, k });
-  }
-  H.queue = q; H.results = [];
-}
-function finishSearch(H) {
-  const R = H.results;
-  if (!R.length) return;
-  let best = R[0];
-  for (const r of R) if (r.score > best.score) best = r;
-  H.score = best.score;
-  if (best.score >= FIND_TH) {
-    // 점수가 높은 창들을 가중 평균해서 위치를 더 정밀하게
-    let wa = 0, wb = 0, wk = 0, w = 0;
-    for (const r of R) if (r.score >= best.score - 0.08) { const wi = Math.pow(r.score, 4); wa += r.a * wi; wb += r.b * wi; wk += r.k * wi; w += wi; }
-    const nf = { a: wa / w, b: wb / w, k: wk / w };
-    if (H.found && H.mode === "local") {
-      const t = 0.6, locked = H.nccT && performance.now() - H.nccT < 400;   // 필라멘트에 맞춰져 있으면 위치는 그대로
-      H.found = { a: locked ? H.found.a : H.found.a + (nf.a - H.found.a) * t, b: locked ? H.found.b : H.found.b + (nf.b - H.found.b) * t, k: locked ? H.found.k : H.found.k + (nf.k - H.found.k) * t };
-    } else H.found = nf;
-    H.hasBulb = true; H.miss = 0; H.mode = "local";
-  } else {
-    H.miss++;
-    if (H.mode === "local" && H.miss < 2) return;      // 한 번 놓친 건 봐줌
-    H.hasBulb = false; H.mode = "global";
-    if (H.miss >= 2) H.found = null;
-  }
-}
-function stepFind() {
-  if (!embedder || RS.phase || !isRegistered()) {
-    if (!RS.phase && !isRegistered()) hands.forEach(H => { H.hasBulb = false; H.found = null; });
-    return;
-  }
-  const vis = visibleHands();
-  let budget = PER_FRAME;
-  while (budget > 0 && vis.length) {
-    let did = false;
-    for (const H of vis) {
-      if (budget <= 0) break;
-      if (!H.queue.length) { finishSearch(H); planSearch(H); }
-      const w = H.queue.shift();
-      const c = handToUV(H, w.a, w.b), s = w.k * H.Lp;
-      if (s > 0.02 && c.x > -0.1 && c.x < 1.1 && c.y > -0.1 && c.y < 1.1) {
-        H.results.push({ ...w, score: classify(embedWin(c.x, c.y, s)) });
-        budget--; did = true;
-      }
+// 손마다 매 프레임 빨간 점을 찾음. 2프레임 연속 보이면 켜고, 잠깐(0.2초) 가려지는 건 봐줌
+function stepFind(now) {
+  if (RS.phase) { hands.forEach(H => { H.hasBulb = false; }); return; }
+  for (const H of visibleHands()) {
+    const r = findDot(H);
+    if (r) {
+      if (!H.dot || now - H.dotSeen > 300) H.dot = { x: r.x, y: r.y };
+      else { const k = 0.7; H.dot.x += (r.x - H.dot.x) * k; H.dot.y += (r.y - H.dot.y) * k; }
+      H.dotSeen = now; H.dotArea = r.area;
+      H.dotHits = Math.min(H.dotHits + 1, 10);
+      if (H.dotHits >= 2) H.hasBulb = true;
+    } else {
+      H.dotHits = 0;
+      if (now - H.dotSeen > 200) H.hasBulb = false;
     }
-    if (!did) break;
   }
-  // 전구를 찾은 손은 매 프레임 필라멘트에 정확히 맞춤
-  const now = performance.now();
-  for (const H of vis) if (H.found && H.hasBulb) refineFilament(H, now);
 }
 
 /* ---------------- 켜짐 판단 + 깜빡임 ---------------- */
 const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];  // 켜질 때 파르르
 function bulbWanted(H) {
-  if (!H.seen || !H.hasBulb || !H.found || RS.phase) return false;
+  if (!H.seen || !H.hasBulb || !H.dot || RS.phase) return false;
   const mode = ui.mode.value;
   if (mode === "click") return false;
-  if (mode === "raise") return H.bulbEst.y < 0.42;
+  if (mode === "raise") return H.dot.y < 0.42;
   return true;
 }
 function stepLight(o, want, idle, now, dt) {
@@ -731,57 +580,53 @@ function stepLight(o, want, idle, now, dt) {
 }
 function stepHands(now, dt) {
   for (const [key, H] of hands) {
-    if (H.seen && now - H.lastSeen > 250) { H.seen = false; H.queue = []; H.results = []; }
-    // 찾은 전구 자리를 손과 함께 움직임 (검색 사이에도 부드럽게 따라감)
-    if (H.found) {
-      const c = handToUV(H, H.found.a + reg.corr.a * H.found.k, H.found.b + reg.corr.b * H.found.k);   // 클릭 보정 반영
-      H.bulbEst.x = c.x; H.bulbEst.y = c.y;
-      H.bulbR = H.found.k * H.Lp * 0.24;
+    if (H.seen && now - H.lastSeen > 250) { H.seen = false; H.hasBulb = false; }
+    stepLight(H, bulbWanted(H), 0, now, dt);   // 점이 없으면 아무 빛도 없음
+    if (H.dot) {
+      // 빛은 빨간 점 바로 그 자리. 지연을 줄이려고 거의 바로 따라감
+      if (!H.L) H.L = { x: H.dot.x, y: H.dot.y };
+      const k = Math.min(1, dt * 40);
+      H.L.x += (H.dot.x - H.L.x) * k; H.L.y += (H.dot.y - H.L.y) * k;
     }
-    stepLight(H, bulbWanted(H), 0, now, dt);   // 전구가 없으면 아무 빛도 없음
-    const tgt = H.bulbEst, tR = H.bulbR;
-    if (!H.L) H.L = { x: tgt.x, y: tgt.y };
-    const k = Math.min(1, dt * 20);
-    H.L.x += (tgt.x - H.L.x) * k; H.L.y += (tgt.y - H.L.y) * k;
+    const tR = H.Lp * 0.3 * +ui.size.value;
     H.R += (tR - H.R) * Math.min(1, dt * 12);
     if (!H.seen && H.I < 0.005) hands.delete(key);
   }
   stepLight(manual, ui.mode.value === "click" && manual.on, 0, now, dt);
 }
 
-/* ---------------- 오버레이 (등록 안내 원 + 디버그) ---------------- */
+/* ---------------- 오버레이 (안내 원 + 디버그) ---------------- */
 const octx = ovc.getContext("2d");
 function drawOverlay() {
   octx.clearRect(0, 0, ovc.width, ovc.height);
   const W = ovc.width, H = ovc.height;
   if (RS.phase) {
-    const r = GUIDE.s * H / 2;
-    octx.lineWidth = 4; octx.strokeStyle = RS.phase === "rec" ? "#ffc861" : "rgba(255,255,255,.85)";
-    octx.setLineDash(RS.phase === "rec" ? [] : [10, 8]);
-    octx.beginPath(); octx.arc(GUIDE.x * W, GUIDE.y * H, r, 0, 7); octx.stroke(); octx.setLineDash([]);
-    const cx = GUIDE.x * W, cy = GUIDE.y * H, c = r * 0.18;
-    octx.lineWidth = 3; octx.strokeStyle = "#ffc861";
+    const r = GUIDE.s * H / 2, cx = GUIDE.x * W, cy = GUIDE.y * H, c = r * 0.5;
+    octx.lineWidth = 3; octx.strokeStyle = RS.phase === "rec" ? "#ffc861" : "rgba(255,255,255,.9)";
+    octx.setLineDash(RS.phase === "rec" ? [] : [8, 6]);
+    octx.beginPath(); octx.arc(cx, cy, r, 0, 7); octx.stroke(); octx.setLineDash([]);
     octx.beginPath(); octx.moveTo(cx - c, cy); octx.lineTo(cx + c, cy); octx.moveTo(cx, cy - c); octx.lineTo(cx, cy + c); octx.stroke();
   }
   if (!ui.debug.checked) return;
+  const sx = W, sy = H;
   for (const h of visibleHands()) {
     octx.fillStyle = "#4cf";
-    for (const p of h.P) { octx.beginPath(); octx.arc(p.x * W, p.y * H, 4, 0, 7); octx.fill(); }
-    if (h.found) {
-      const s = h.found.k * h.Lp * H;
-      octx.strokeStyle = h.hasBulb ? "#ffc861" : "rgba(255,255,255,.5)"; octx.lineWidth = 2;
-      octx.strokeRect(h.bulbEst.x * W - s / 2, h.bulbEst.y * H - s / 2, s, s);
-      const fx = h.bulbEst.x * W, fy = h.bulbEst.y * H;
-      octx.strokeStyle = "#ff5a5a"; octx.beginPath(); octx.moveTo(fx - 10, fy); octx.lineTo(fx + 10, fy); octx.moveTo(fx, fy - 10); octx.lineTo(fx, fy + 10); octx.stroke();
+    for (const p of h.P) { octx.beginPath(); octx.arc(p.x * sx, p.y * sy, 4, 0, 7); octx.fill(); }
+    if (h.roi) {
+      // 점을 찾는 영역 (거울 기준으로 다시 그림)
+      const R = h.roi, rx = (1 - (R.x0 + R.w) / R.vw) * sx, ry = R.y0 / R.vh * sy;
+      octx.strokeStyle = "rgba(255,255,255,.35)"; octx.setLineDash([6, 6]); octx.lineWidth = 1.5;
+      octx.strokeRect(rx, ry, R.w / R.vw * sx, R.h / R.vh * sy); octx.setLineDash([]);
     }
-    const tp = handToUV(h, -0.6, 0);
-    octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(tp.x * W - 75, tp.y * H, 210, 24);
-    octx.fillStyle = h.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 14px system-ui";
-    octx.fillText("전구 " + Math.round(h.score * 100) + "% · 모양 " + Math.round((h.ncc || 0) * 100) + "%", tp.x * W - 67, tp.y * H + 17);
+    if (h.dot) {
+      const fx = h.dot.x * sx, fy = h.dot.y * sy;
+      octx.strokeStyle = h.hasBulb ? "#ff5a5a" : "rgba(255,255,255,.6)"; octx.lineWidth = 2;
+      octx.beginPath(); octx.moveTo(fx - 12, fy); octx.lineTo(fx + 12, fy); octx.moveTo(fx, fy - 12); octx.lineTo(fx, fy + 12); octx.stroke();
+      octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(fx + 14, fy - 12, 120, 24);
+      octx.fillStyle = h.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 13px system-ui";
+      octx.fillText(h.hasBulb ? "점 찾음 · " + h.dotArea + "px" : "점 놓침", fx + 20, fy + 5);
+    }
   }
-  // 모델이 마지막으로 본 화면 (거울 모드로)
-  octx.save(); octx.translate(16 + 140, H - 16 - 140); octx.scale(-1, 1);
-  octx.drawImage(crop, 0, 0, 140, 140); octx.restore();
 }
 
 /* ---------------- 메인 루프 ---------------- */
@@ -793,6 +638,7 @@ function loop() {
 
   if (video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
+    frame++;
     if (handLM) {
       const r = handLM.detectForVideo(video, now);
       const used = new Set();
@@ -815,10 +661,9 @@ function loop() {
         S.hasMask = true; S.maskDirty = true;
       });
     }
-    stepFind();
-    frame++;
+    stepFind(now);
+    stepReg(now);
   }
-  stepReg(now);
   stepHands(now, dt);
 
   // 빛 목록 만들기
@@ -867,15 +712,12 @@ function loop() {
 function updateStatus() {
   let msg;
   const vis = visibleHands();
-  const anyOn = vis.some(H => H.on);
-  if (!handLM || !embedder) msg = "인식 모델 불러오는 중…";
-  else if (RS.phase) msg = "전구 등록 중…";
-  else if (calibrating) msg = "📍 전구를 든 채로, 화면에서 <b>빛이 맺힐 자리</b>를 클릭하세요";
+  if (!handLM) msg = "인식 모델 불러오는 중…";
+  else if (RS.phase) msg = "점 색 맞추는 중…";
   else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
-  else if (!isRegistered()) msg = "<b>내 전구</b>를 등록하면 전구를 들었을 때 켜져요";
-  else if (anyOn) msg = "<b>💡 켜짐</b>";
+  else if (vis.some(H => H.on)) msg = "<b>💡 켜짐</b>";
   else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
-  else msg = "전구를 들어 카메라에 보여 주세요";
+  else msg = "빨간 점을 그린 전구를 들어 주세요";
   statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
 }
 
@@ -886,7 +728,7 @@ async function loadModels() {
     try { return await Cls.createFromOptions(fs, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "GPU" } }); }
     catch (e) { return await Cls.createFromOptions(fs, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "CPU" } }); }
   };
-  const [h, s, e] = await Promise.all([
+  const [h, s] = await Promise.all([
     mk(HandLandmarker, {
       baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
       runningMode: "VIDEO", numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
@@ -895,18 +737,8 @@ async function loadModels() {
       baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite" },
       runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
     }),
-    mk(ImageEmbedder, {
-      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite" },
-      runningMode: "IMAGE", l2Normalize: true, quantize: false,
-    }),
   ]);
-  handLM = h; segm = s; embedder = e;
-  // 저장된 등록 데이터가 다른 모델 크기면 버림
-  if (reg.pos.length) {
-    let d = 0;
-    try { cctx.fillRect(0, 0, crop.width, crop.height); d = embedder.embed(crop).embeddings[0].floatEmbedding.length; } catch (err) {}
-    if (d && reg.pos[0].length !== d) { reg.pos = []; reg.neg = []; }
-  }
+  handLM = h; segm = s;
   refreshRegUI();
 }
 
@@ -944,30 +776,7 @@ function toggleManual() {
   ui.mode.value = "click"; manual.on = !manual.on; updateStatus();
 }
 $("toggle").addEventListener("click", toggleManual);
-let calibrating = false;
-// 화면 클릭 위치 → 영상 좌표 (화면을 꽉 채우도록 잘려 보이는 것까지 고려)
-function screenToUV(ev) {
-  const r = glc.getBoundingClientRect();
-  const sc = Math.max(r.width / glc.width, r.height / glc.height);
-  const dw = glc.width * sc, dh = glc.height * sc;
-  return { x: (ev.clientX - r.left - (r.width - dw) / 2) / dw, y: (ev.clientY - r.top - (r.height - dh) / 2) / dh };
-}
-$("calib").addEventListener("click", () => {
-  if (!isRegistered()) { alert("먼저 내 전구를 등록해 주세요."); return; }
-  calibrating = true; updateStatus();
-});
-$("stage").addEventListener("click", (ev) => {
-  if (calibrating) {
-    calibrating = false;
-    const H = visibleHands().find(h => h.found && h.hasBulb);
-    if (!H) { alert("전구를 들어서 불이 켜진 상태에서 다시 눌러 주세요."); updateStatus(); return; }
-    const h = uvToHand(H, screenToUV(ev));
-    reg.corr = { a: (h.a - H.found.a) / H.found.k, b: (h.b - H.found.b) / H.found.k };
-    saveReg(); updateStatus();
-    return;
-  }
-  if (ui.mode.value === "click") { manual.on = !manual.on; updateStatus(); }
-});
+$("stage").addEventListener("click", () => { if (ui.mode.value === "click") { manual.on = !manual.on; updateStatus(); } });
 addEventListener("keydown", (e) => { if (e.code === "Space" && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT") { e.preventDefault(); toggleManual(); } });
 ui.mode.addEventListener("change", updateStatus);
 
