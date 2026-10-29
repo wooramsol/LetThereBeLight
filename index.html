@@ -249,7 +249,7 @@ function grabFrame() {
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
 
-const dotColor = { h: 120, s: 0.32, v: 0.18, tol: 40 };   // vivid green, hue 80..160
+const dotColor = { h: 120, s: 0.22, v: 0.12, tol: 50 };   // green, hue 70..170
 
 function hsv(r, g, b) {
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
@@ -292,7 +292,7 @@ function findStickers() {
     }
     m.set(dilBuf.subarray(0, n));
   }
-  const out = [], minArea = 30, maxArea = (0.25 * h) ** 2;
+  const out = [], minArea = 12, maxArea = (0.25 * h) ** 2;
   for (let i = 0; i < n; i++) {
     if (m[i] !== 1) continue;
     let sp = 0, cnt = 0, sx = 0, sy = 0, ss = 0, ux = 0, uy = 0, uxx = 0, uyy = 0, uxy = 0;
@@ -316,7 +316,7 @@ function findStickers() {
     const asp = Math.sqrt(l1 / l2), fill = cnt / (4 * Math.PI * Math.sqrt(l1 * l2));
     const x = 1 - (bx + 0.5) / w, y = (by + 0.5) / h;
     const tracked = tracks.some(t => Math.hypot((x - t.x) * aspect, y - t.y) < Math.max(0.03, t.r * 4));
-    const isRound = asp < 2.0 && fill > 0.65;
+    const isRound = asp < 2.3 && fill > 0.55;
     if (!isRound && !(tracked && asp < 3.2)) continue;   // a tracked sticker may look squashed for a moment
     out.push({ x, y, r: Math.sqrt(cnt / Math.PI) / h, area: cnt });
   }
