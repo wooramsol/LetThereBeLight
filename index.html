@@ -169,6 +169,7 @@ uniform vec2 uDir[MAXL];        // 전구 방향(손목→손가락)
 uniform float uR[MAXL];         // 크기
 uniform float uI[MAXL];         // 밝기
 uniform float uT[MAXL];         // 1 = 전구, 0 = 손가락 끝 빛
+uniform float uB[MAXL];         // 1 = 몸 뒤로 숨음
 uniform vec2 uHand[42];         // 양손 랜드마크
 uniform int uHandN;
 
@@ -201,9 +202,14 @@ void main(){
     float Ib = 0.55 / (1.0 + pow(d / (Rr * 6.5), 2.0));
     float sh = 0.0;                                // 배경에 드리우는 사람 그림자
     for (int i = 1; i <= 8; i++) sh += smoothstep(0.3, 0.8, person(uv + (uL[j] - uv) * (0.035 * float(i))));
-    sh = (sh / 8.0) * uShadow * (1.0 - pm);
-    float L = mix(Ib * (1.0 - 0.9 * sh), Ip, pm);
-    float hand = exp(-pow(dh / (Rr * 0.9), 2.0)) * max(pm, 0.35);
+    float b = uB[j];
+    sh = (sh / 8.0) * uShadow * (1.0 - pm) * (1.0 - b);   // 몸 뒤의 빛은 벽에 내 그림자를 만들지 않음
+    float L = mix(Ib * (1.0 - 0.9 * sh), Ip * (1.0 - b), pm);
+    // 몸 뒤에 있으면: 몸 앞면은 어둡고, 빛 쪽 윤곽만 테두리처럼 밝아짐
+    vec2 du = normalize((uL[j] - uv) * vec2(uAspect, 1.0) + vec2(1e-5)) * vec2(1.0 / uAspect, 1.0) * 0.014;
+    float rim = pm * (1.0 - smoothstep(0.3, 0.8, person(uv + du)));
+    L += b * rim * (Ib * 3.0 + 0.4 * exp(-pow(d / (Rr * 4.0), 2.0)));
+    float hand = exp(-pow(dh / (Rr * 0.9), 2.0)) * max(pm, 0.35) * (1.0 - b);
     float nearL = exp(-pow(d / (Rr * 2.2), 2.0));
     light += uWarm * (L * 2.6 + hand * nearL * 0.9) * I;
     sss += vec3(1.0, 0.28, 0.10) * hand * nearL * 1.4 * I;   // 빛이 비쳐 붉게 물드는 손
@@ -221,6 +227,7 @@ void main(){
     vec2 dir = normalize(uDir[j] + vec2(1e-5));
     vec2 per = vec2(-dir.y, dir.x);
     float al = dot(q, dir), ac = dot(q, per);
+    I *= 1.0 - uB[j] * smoothstep(0.2, 0.7, pm);   // 몸이 가리면 광원 자체는 안 보임
 
     if (uT[j] > 0.5) {
       if (uVirtual > 0.5) {
@@ -317,7 +324,7 @@ function initGL() {
   const loc = gl.getAttribLocation(prog, "p");
   gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   for (const n of ["uVideo","uMask","uAspect","uAmb","uShadow","uVirtual","uHasMask","uDebug","uTime","uWarm",
-                   "uN","uL","uDir","uR","uI","uT","uHand","uHandN"])
+                   "uN","uL","uDir","uR","uI","uT","uB","uHand","uHandN"])
     U[n] = gl.getUniformLocation(prog, n);
   const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -339,7 +346,7 @@ function newHand() {
     bulbEst: { x: 0.5, y: 0.5 }, tip: { x: 0.5, y: 0.5 }, dir: { x: 0, y: -1 }, bulbR: 0.07,
     L: null, R: 0.03, type: 0,
     cropC: { x: 0.5, y: 0.5 }, cropS: 0.3, bulbP: 0, hasBulb: false, lastEmbed: 0,
-    on: false, I: 0, flickerT: -1 };
+    on: false, I: 0, flickerT: -1, hidden: false, hiddenT: 0, behind: 0 };
 }
 let handLM = null, segm = null, aspect = 16 / 9;
 
@@ -583,21 +590,50 @@ function stepLight(o, want, idle, now, dt) {
   const target = o.on ? max : idle;
   o.I += (target - o.I) * Math.min(1, dt * (o.on ? 10 : 7));
 }
+function maskAt(x, y) {
+  if (!S.hasMask || !S.mask) return 0;
+  const mx = Math.min(S.maskW - 1, Math.max(0, ((1 - x) * S.maskW) | 0));
+  const my = Math.min(S.maskH - 1, Math.max(0, (y * S.maskH) | 0));
+  return S.mask[my * S.maskW + mx] / 255;
+}
+// 손이 사라진 자리가 몸과 겹치면 몸 뒤로 숨은 것으로 봄 (화면 밖으로 나간 건 제외)
+function isBehindBody(H) {
+  if (!H.L || !S.hasMask) return false;
+  const x = H.L.x, y = H.L.y;
+  if (x < 0.03 || x > 0.97 || y < 0.03 || y > 0.97) return false;
+  if (maskAt(x, y) > 0.5) return true;
+  const r = Math.max(H.R, 0.03) * 1.2;
+  let hit = 0;
+  for (let i = 0; i < 12; i++) {
+    const a = i / 12 * Math.PI * 2;
+    if (maskAt(x + Math.cos(a) * r / aspect, y + Math.sin(a) * r) > 0.5) hit++;
+  }
+  return hit >= 4;
+}
 function stepHands(now, dt) {
   const fingerI = ui.finger.checked && !RS.phase && ui.mode.value !== "click" ? +ui.intensity.value * 0.5 : 0;
   for (const [key, H] of hands) {
-    if (H.seen && now - H.lastSeen > 250) H.seen = false;
-    const want = bulbWanted(H);
-    stepLight(H, want, H.seen ? fingerI : 0, now, dt);
-    // 빛 위치·크기: 전구면 전구 자리, 아니면 검지 끝
-    const tgt = H.on ? H.bulbEst : H.tip;
-    const tR = H.on ? H.bulbR : H.Lp * 0.24;
-    if (!H.L) H.L = { x: tgt.x, y: tgt.y };
-    const k = Math.min(1, dt * 18);
-    H.L.x += (tgt.x - H.L.x) * k; H.L.y += (tgt.y - H.L.y) * k;
-    H.R += (tR - H.R) * Math.min(1, dt * 12);
+    if (H.seen && now - H.lastSeen > 250) {
+      H.seen = false;
+      H.hidden = isBehindBody(H); H.hiddenT = now;
+    }
+    if (H.seen) H.hidden = false;
+    else if (H.hidden && now - H.hiddenT > 10000) H.hidden = false;   // 10초 넘게 안 나오면 끔
+    // 몸 뒤에 숨은 동안은 켜짐 상태와 위치를 그대로 유지 (빛은 계속 켜져 있음)
+    const want = H.hidden ? H.on : bulbWanted(H);
+    stepLight(H, want, (H.seen || H.hidden) ? fingerI : 0, now, dt);
+    if (H.seen) {
+      // 빛 위치·크기: 전구면 전구 자리, 아니면 검지 끝
+      const tgt = H.on ? H.bulbEst : H.tip;
+      const tR = H.on ? H.bulbR : H.Lp * 0.24;
+      if (!H.L) H.L = { x: tgt.x, y: tgt.y };
+      const k = Math.min(1, dt * 18);
+      H.L.x += (tgt.x - H.L.x) * k; H.L.y += (tgt.y - H.L.y) * k;
+      H.R += (tR - H.R) * Math.min(1, dt * 12);
+    }
+    H.behind += ((H.seen ? 0 : 1) - H.behind) * Math.min(1, dt * 12);
     H.type = H.on ? 1 : 0;
-    if (!H.seen && H.I < 0.005) hands.delete(key);
+    if (!H.seen && !H.hidden && H.I < 0.005) hands.delete(key);
   }
   stepLight(manual, ui.mode.value === "click" && manual.on, 0, now, dt);
 }
@@ -646,7 +682,11 @@ function loop() {
         let key = (r.handednesses && r.handednesses[i] && r.handednesses[i][0] && r.handednesses[i][0].categoryName) || ("h" + i);
         if (used.has(key)) key += i;
         used.add(key);
-        if (!hands.has(key)) hands.set(key, newHand());
+        if (!hands.has(key)) {
+          // 몸 뒤에 숨었던 손이 다시 나오면 같은 손으로 이어 붙임
+          const hid = [...hands.entries()].find(([k, h]) => h.hidden && !used.has(k));
+          if (hid) { hands.delete(hid[0]); hands.set(key, hid[1]); } else hands.set(key, newHand());
+        }
         updateHand(hands.get(key), lms, now);
       });
     }
@@ -669,14 +709,14 @@ function loop() {
 
   // 빛 목록 만들기
   const lights = [];
-  for (const H of hands.values()) if (H.L && H.I > 0.002) lights.push({ L: H.L, dir: H.dir, R: H.R, I: H.I, T: H.type });
-  if (manual.I > 0.002) lights.push({ L: manual.L, dir: manual.dir, R: manual.R, I: manual.I, T: 1 });
+  for (const H of hands.values()) if (H.L && H.I > 0.002) lights.push({ L: H.L, dir: H.dir, R: H.R, I: H.I, T: H.type, B: H.behind });
+  if (manual.I > 0.002) lights.push({ L: manual.L, dir: manual.dir, R: manual.R, I: manual.I, T: 1, B: 0 });
   const n = Math.min(MAXL, lights.length);
-  const aL = new Float32Array(MAXL * 2), aD = new Float32Array(MAXL * 2), aR = new Float32Array(MAXL), aI = new Float32Array(MAXL), aT = new Float32Array(MAXL);
+  const aL = new Float32Array(MAXL * 2), aD = new Float32Array(MAXL * 2), aR = new Float32Array(MAXL), aI = new Float32Array(MAXL), aT = new Float32Array(MAXL), aB = new Float32Array(MAXL);
   for (let i = 0; i < n; i++) {
     const l = lights[i];
     aL[i * 2] = l.L.x; aL[i * 2 + 1] = l.L.y; aD[i * 2] = l.dir.x; aD[i * 2 + 1] = l.dir.y;
-    aR[i] = l.R; aI[i] = l.I; aT[i] = l.T;
+    aR[i] = l.R; aI[i] = l.I; aT[i] = l.T; aB[i] = l.B;
   }
   const hp = new Float32Array(84); let hn = 0;
   for (const H of hands.values()) if (H.seen) for (const p of H.P) { if (hn < 42) { hp[hn * 2] = p.x; hp[hn * 2 + 1] = p.y; hn++; } }
@@ -699,7 +739,7 @@ function loop() {
   gl.uniform3fv(U.uWarm, kelvinToRGB(+ui.kelvin.value));
   gl.uniform1i(U.uN, n);
   gl.uniform2fv(U.uL, aL); gl.uniform2fv(U.uDir, aD);
-  gl.uniform1fv(U.uR, aR); gl.uniform1fv(U.uI, aI); gl.uniform1fv(U.uT, aT);
+  gl.uniform1fv(U.uR, aR); gl.uniform1fv(U.uI, aI); gl.uniform1fv(U.uT, aT); gl.uniform1fv(U.uB, aB);
   gl.uniform2fv(U.uHand, hp);
   gl.uniform1i(U.uHandN, hn);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -718,6 +758,7 @@ function updateStatus() {
   else if (RS.phase) msg = "전구 등록 중…";
   else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
   else if (anyOn) msg = "<b>💡 켜짐</b>";
+  else if ([...hands.values()].some(H => H.hidden && H.I > 0.01)) msg = "빛이 몸 뒤에 숨었어요";
   else if (!vis.length) msg = "손이나 전구를 카메라에 보여 주세요";
   else if (!isRegistered()) msg = "<b>내 전구</b>를 등록하면 전구를 들었을 때 켜져요";
   else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
