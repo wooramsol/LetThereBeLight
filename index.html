@@ -96,8 +96,9 @@
     <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
     <ul>
       <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>빨간 점과 그 위에 겹친 빨간 십자(+)</b>를 그려 주세요. 십자 가운데에 불이 켜져요.</li>
-      <li>십자 모양만 찾기 때문에 빈손이나 입술 같은 빨간 것에는 반응하지 않아요.</li>
+      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>진한 색 펜으로 점과 십자(+)</b>를 그려 주세요. 십자 가운데에 불이 켜져요.</li>
+      <li><b>초록이나 파랑</b>을 추천해요. 피부·입술 색과 겹치지 않아서 잘 찾아요.</li>
+      <li>십자 모양만 찾기 때문에 빈손에는 반응하지 않아요.</li>
       <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
     </ul>
     <button class="primary" id="start">카메라 켜고 시작</button>
@@ -137,10 +138,18 @@
     <label class="check"><input type="checkbox" id="virtual"> 화면에 가상 전구 겹쳐 그리기</label>
     <label class="check"><input type="checkbox" id="sound" checked> 딸깍 소리</label>
     <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
+    <label>십자 색
+      <select id="dotPreset">
+        <option value="red">빨강</option>
+        <option value="green">초록 (추천)</option>
+        <option value="blue">파랑</option>
+        <option value="custom" id="optCustom">직접 맞춘 색</option>
+      </select>
+    </label>
     <div class="reginfo" id="regInfo"></div>
     <div class="row">
-      <button id="regBtn">🎯 점 색 맞추기</button>
-      <button id="regReset">기본 색으로</button>
+      <button id="regBtn">🎯 색 직접 맞추기</button>
+      <button id="regReset">맞춘 색 지우기</button>
     </div>
     <div class="row">
       <button id="snap">📸 사진 저장</button>
@@ -269,7 +278,7 @@ const statusEl = $("status");
 
 /* ---------------- 설정 ---------------- */
 const ui = {};
-for (const id of ["mode","intensity","size","dark","kelvin","shadow","virtual","sound","debug"]) ui[id] = $(id);
+for (const id of ["mode","intensity","size","dark","kelvin","shadow","virtual","sound","debug","dotPreset"]) ui[id] = $(id);
 function readUI() {
   $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
   $("vSize").textContent = (+ui.size.value).toFixed(2) + "x";
@@ -386,15 +395,29 @@ function grabFrame() {
   const fh = Math.round(FW / aspect); if (frameC.height !== fh) frameC.height = fh;
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
-// 점 색 (등록하면 내 점 색으로 바뀜). h: 색상(도), s: 채도 하한, v: 밝기 하한, tol: 색상 허용 범위
-const COLOR_KEY = "bulb-light-dot-v1";
-const DEFAULT_COLOR = { h: 355, s: 0.5, v: 0.22, tol: 16 };
-let dotColor = { ...DEFAULT_COLOR }, colorCustom = false;
+// 십자 색: 미리 정한 색(빨강/초록/파랑) 또는 화면에서 읽어 온 내 색
+// h: 색상(도), s: 채도 하한, v: 밝기 하한, tol: 색상 허용 범위
+const COLOR_KEY = "bulb-light-dot-v1", PRESET_KEY = "bulb-light-dot-preset";
+const PRESETS = {
+  red:   { h: 355, s: 0.5,  v: 0.22, tol: 16 },
+  green: { h: 125, s: 0.35, v: 0.18, tol: 30 },
+  blue:  { h: 215, s: 0.4,  v: 0.18, tol: 25 },
+};
+let customColor = null, dotColor = { ...PRESETS.red };
 try {
   ["bulb-light-reg-v1","bulb-light-reg-v2","bulb-light-reg-v3","bulb-light-reg-v4","bulb-light-reg-v5"].forEach(k => localStorage.removeItem(k));
   const c = JSON.parse(localStorage.getItem(COLOR_KEY) || "null");
-  if (c && typeof c.h === "number") { dotColor = c; colorCustom = true; }
+  if (c && typeof c.h === "number") customColor = c;
+  const p = localStorage.getItem(PRESET_KEY);
+  if (p && (PRESETS[p] || (p === "custom" && customColor))) ui.dotPreset.value = p;
 } catch (e) {}
+function applyPreset() {
+  const p = ui.dotPreset.value;
+  dotColor = p === "custom" && customColor ? { ...customColor } : { ...(PRESETS[p] || PRESETS.red) };
+  $("optCustom").disabled = !customColor;
+  try { localStorage.setItem(PRESET_KEY, p); } catch (e) {}
+}
+applyPreset();
 
 function hsv(r, g, b) {
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
@@ -451,6 +474,7 @@ function findDot(H, now) {
   if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); compBuf = new Int32Array(n); }
   const m = maskBuf, sat = satBuf;
   for (let i = 0; i < n; i++) { const v = dotSat(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); sat[i] = v; m[i] = v > 0 ? 1 : 0; }
+  if (ui.debug.checked) H.dbgMask = { w, h, m: m.slice(0, n) }; else H.dbgMask = null;
   // 방금까지 따라가던 자리 (잠깐 흐려져서 십자 모양이 안 보여도 이 근처면 봐줌)
   const locked = H.dot && now - H.dotSeen < 400;
   const prev = H.dot ? { x: (1 - H.dot.x) * vw - x0, y: H.dot.y * vh - y0 } : null;
@@ -484,12 +508,12 @@ function findDot(H, now) {
   return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt, cross: best.cross, isCross: best.isCross };
 }
 
-/* ---------------- 점 색 맞추기 (선택) ---------------- */
+/* ---------------- 십자 색 직접 맞추기 (선택) ---------------- */
 const GUIDE = { x: 0.5, y: 0.4, s: 0.12 };
 const RS = { phase: null, t0: 0, samples: [] };
 const PHASES = {
-  prep: { next: "rec", dur: 3000, step: "준비", title: "빨간 점을 십자(+)에 대 주세요", desc: "전구에 그린 빨간 점이 화면 가운데 작은 원 안에 오도록 들어 주세요." },
-  rec:  { next: "done", dur: 2000, rec: true, step: "색 읽는 중", title: "점 색 읽는 중", desc: "그대로 잠깐만 들고 있어 주세요." },
+  prep: { next: "rec", dur: 3000, step: "준비", title: "십자 가운데를 작은 원에 대 주세요", desc: "전구에 그린 십자가 화면 가운데 작은 원 안에 오도록 들어 주세요." },
+  rec:  { next: "done", dur: 2000, rec: true, step: "색 읽는 중", title: "십자 색 읽는 중", desc: "그대로 잠깐만 들고 있어 주세요." },
 };
 function startReg() {
   RS.samples = [];
@@ -501,23 +525,31 @@ function setPhase(ph) {
   if (ph === "done") {
     $("reg").hidden = true; RS.phase = null;
     const A = RS.samples;
+    let ok = false;
     if (A.length >= 20) {
-      // 색상은 원형 평균, 채도·밝기는 하위 값 기준으로 여유 있게
-      let sx = 0, sy = 0; for (const c of A) { sx += Math.cos(c.h * Math.PI / 180); sy += Math.sin(c.h * Math.PI / 180); }
+      // 가장 많이 보인 색상대를 고름 (원 안에 배경이 조금 섞여도 괜찮게)
+      const hist = new Float32Array(36);
+      // 진한 픽셀일수록 크게 침. 피부·따뜻한 벽 색(15~45도)은 후보에서 뺌
+      for (const c of A) { const b = Math.floor(c.h / 10) % 36; if (c.h >= 15 && c.h <= 45) continue; hist[b] += c.s ** 4; }
+      let pb = 0; for (let i = 1; i < 36; i++) if (hist[i] > hist[pb]) pb = i;
+      const B = A.filter(c => hueDist(c.h, pb * 10 + 5) <= 25 && c.s > 0.5);
+      let sx = 0, sy = 0; for (const c of B) { sx += Math.cos(c.h * Math.PI / 180); sy += Math.sin(c.h * Math.PI / 180); }
       let h = Math.atan2(sy, sx) * 180 / Math.PI; if (h < 0) h += 360;
-      if (hueDist(h, 0) > 18) { RS.samples = []; }   // 빨강에서 너무 벗어나면(피부색 쪽) 실패 처리
-    }
-    if (A.length >= 20 && RS.samples.length) {
-      let sx = 0, sy = 0; for (const c of A) { sx += Math.cos(c.h * Math.PI / 180); sy += Math.sin(c.h * Math.PI / 180); }
-      let h = Math.atan2(sy, sx) * 180 / Math.PI; if (h < 0) h += 360;
-      const ss = A.map(c => c.s).sort((a, b) => a - b), vv = A.map(c => c.v).sort((a, b) => a - b);
-      const dev = A.map(c => hueDist(c.h, h)).sort((a, b) => a - b);
-      dotColor = { h, s: Math.max(0.4, ss[Math.floor(ss.length * 0.15)] * 0.75), v: Math.max(0.12, vv[Math.floor(vv.length * 0.15)] * 0.6),
-                   tol: Math.min(20, Math.max(10, dev[Math.floor(dev.length * 0.9)] + 6)) };
-      colorCustom = true;
-      try { localStorage.setItem(COLOR_KEY, JSON.stringify(dotColor)); } catch (e) {}
+      if (B.length < 20) {
+        alert("십자 색을 읽지 못했어요. 십자가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
+      } else if (hueDist(h, 22) < 14) {
+        alert("피부색과 너무 비슷한 색이라 쓰기 어려워요. 초록이나 파랑 펜을 추천해요.");
+      } else {
+        const ss = B.map(c => c.s).sort((a, b) => a - b), vv = B.map(c => c.v).sort((a, b) => a - b);
+        const dev = B.map(c => hueDist(c.h, h)).sort((a, b) => a - b);
+        customColor = { h, s: Math.max(0.3, ss[Math.floor(ss.length * 0.15)] * 0.75), v: Math.max(0.12, vv[Math.floor(vv.length * 0.15)] * 0.6),
+                        tol: Math.min(25, Math.max(12, dev[Math.floor(dev.length * 0.9)] + 6)) };
+        try { localStorage.setItem(COLOR_KEY, JSON.stringify(customColor)); } catch (e) {}
+        $("optCustom").disabled = false; ui.dotPreset.value = "custom"; applyPreset();
+        ok = true;
+      }
     } else {
-      alert("점 색을 읽지 못했어요. 빨간 점이 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
+      alert("색이 진한 십자가 안 보여요. 십자가 가운데 작은 원 안에 오도록 다시 시도해 주세요.");
     }
     refreshRegUI(); return;
   }
@@ -531,7 +563,7 @@ function stepReg(now) {
   const P = PHASES[RS.phase], el = now - RS.t0;
   $("regBar").style.width = Math.min(100, el / P.dur * 100) + "%";
   if (P.rec) {
-    // 가운데 원 안에서 채도 높은(색이 진한) 픽셀만 모음
+    // 가운데 원 안에서 색이 진한 픽셀만 모음 (어떤 색이든)
     grabFrame();
     const vw = frameC.width, vh = frameC.height, r = Math.round(GUIDE.s * vh / 2);
     const cx = Math.round((1 - GUIDE.x) * vw), cy = Math.round(GUIDE.y * vh);
@@ -539,11 +571,11 @@ function stepReg(now) {
     for (let y = 0; y < r * 2; y++) for (let x = 0; x < r * 2; x++) {
       if ((x - r) ** 2 + (y - r) ** 2 > r * r) continue;
       const i = (y * r * 2 + x) * 4, c = hsv(d[i], d[i + 1], d[i + 2]);
-      if (c.s > 0.45 && c.v > 0.15 && (c.h < 22 || c.h > 320)) RS.samples.push(c);   // 진한 빨강만 (피부·주황빛 배경 제외)
+      if (c.s > 0.4 && c.v > 0.15) RS.samples.push(c);
     }
     if (RS.samples.length > 4000) RS.samples.splice(0, RS.samples.length - 4000);
     $("regCount").textContent = "";
-    $("regWarn").textContent = RS.samples.length < 20 ? "빨간 점이 안 보여요. 작은 원 안에 맞춰 주세요." : "";
+    $("regWarn").textContent = RS.samples.length < 20 ? "색이 진한 십자가 안 보여요. 작은 원 안에 맞춰 주세요." : "";
   } else {
     $("regCount").textContent = Math.max(1, Math.ceil((P.dur - el) / 1000));
     $("regWarn").textContent = "";
@@ -551,18 +583,22 @@ function stepReg(now) {
   if (el >= P.dur) setPhase(P.next);
 }
 function refreshRegUI() {
-  $("regInfo").innerHTML = colorCustom
-    ? "<b>점 색 맞춤 완료</b> · 내 빨간 점 색으로 찾아요"
-    : "기본 빨간색으로 찾아요. 잘 안 잡히면 <b>점 색 맞추기</b>를 해 보세요.";
+  const names = { red: "빨간", green: "초록", blue: "파란" }, p = ui.dotPreset.value;
+  const sw = '<i style="display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:-1px;background:hsl(' + Math.round(dotColor.h) + ',85%,50%)"></i> ';
+  $("regInfo").innerHTML = sw + (p === "custom"
+    ? "<b>직접 맞춘 색</b>의 십자를 찾아요"
+    : "<b>" + names[p] + "</b> 십자를 찾아요. 잘 안 잡히면 <b>색 직접 맞추기</b>를 해 보세요.");
   updateStatus();
 }
 $("regBtn").addEventListener("click", startReg);
 $("regCancel").addEventListener("click", cancelReg);
 $("regReset").addEventListener("click", () => {
-  dotColor = { ...DEFAULT_COLOR }; colorCustom = false;
+  customColor = null;
   try { localStorage.removeItem(COLOR_KEY); } catch (e) {}
-  refreshRegUI();
+  if (ui.dotPreset.value === "custom") ui.dotPreset.value = "red";
+  applyPreset(); refreshRegUI();
 });
+ui.dotPreset.addEventListener("change", () => { applyPreset(); refreshRegUI(); });
 
 const visibleHands = () => [...hands.values()].filter(H => H.seen);
 
@@ -623,7 +659,7 @@ function stepHands(now, dt) {
 }
 
 /* ---------------- 오버레이 (안내 원 + 디버그) ---------------- */
-const octx = ovc.getContext("2d");
+const octx = ovc.getContext("2d"), dbgC = document.createElement("canvas");
 function drawOverlay() {
   octx.clearRect(0, 0, ovc.width, ovc.height);
   const W = ovc.width, H = ovc.height;
@@ -644,6 +680,14 @@ function drawOverlay() {
       const R = h.roi, rx = (1 - (R.x0 + R.w) / R.vw) * sx, ry = R.y0 / R.vh * sy;
       octx.strokeStyle = "rgba(255,255,255,.35)"; octx.setLineDash([6, 6]); octx.lineWidth = 1.5;
       octx.strokeRect(rx, ry, R.w / R.vw * sx, R.h / R.vh * sy); octx.setLineDash([]);
+      if (h.dbgMask && h.dbgMask.w === R.w && h.dbgMask.h === R.h) {
+        // 십자 색으로 인식된 픽셀 (하늘색)
+        const M = h.dbgMask, img = new ImageData(M.w, M.h);
+        for (let i = 0; i < M.m.length; i++) if (M.m[i]) { img.data[i * 4] = 0; img.data[i * 4 + 1] = 230; img.data[i * 4 + 2] = 255; img.data[i * 4 + 3] = 200; }
+        dbgC.width = M.w; dbgC.height = M.h; dbgC.getContext("2d").putImageData(img, 0, 0);
+        octx.save(); octx.translate(rx + R.w / R.vw * sx, ry); octx.scale(-1, 1);
+        octx.drawImage(dbgC, 0, 0, R.w / R.vw * sx, R.h / R.vh * sy); octx.restore();
+      }
     }
     if (h.dot) {
       const fx = h.dot.x * sx, fy = h.dot.y * sy;
@@ -740,11 +784,11 @@ function updateStatus() {
   let msg;
   const vis = visibleHands();
   if (!handLM) msg = "인식 모델 불러오는 중…";
-  else if (RS.phase) msg = "점 색 맞추는 중…";
+  else if (RS.phase) msg = "십자 색 맞추는 중…";
   else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
   else if (vis.some(H => H.on)) msg = "<b>💡 켜짐</b>";
   else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
-  else msg = "빨간 십자(+)를 그린 전구를 들어 주세요";
+  else msg = "십자(+)를 그린 전구를 들어 주세요";
   statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
 }
 
