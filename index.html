@@ -96,8 +96,7 @@
     <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
     <ul>
       <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>처음에 10초 동안 <b>내 전구를 등록</b>하면, 전구를 들었을 때만 전구에 불이 켜져요.</li>
-      <li>전구 없이 손을 보여 주면 양손 검지 끝에 작은 빛이 맺혀요.</li>
+      <li>처음에 10초 동안 <b>내 전구를 등록</b>하면, 빈손에는 반응하지 않고 전구를 들었을 때만 켜져요.</li>
       <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
     </ul>
     <button class="primary" id="start">카메라 켜고 시작</button>
@@ -134,8 +133,6 @@
     <label><span>색온도 <i id="vKelvin"></i></span><input type="range" id="kelvin" min="1800" max="6000" step="100" value="2700"></label>
     <label><span>배경 그림자 <i id="vShadow"></i></span><input type="range" id="shadow" min="0" max="1" step="0.05" value="0.7"></label>
     <label class="check"><input type="checkbox" id="virtual"> 화면에 가상 전구 겹쳐 그리기</label>
-    <label class="check"><input type="checkbox" id="finger" checked> 전구가 없으면 검지 끝에 빛 (양손)</label>
-    <label class="check"><input type="checkbox" id="refine" checked> 실제 전구 위치 보정 (밝은 물체 추적)</label>
     <label class="check"><input type="checkbox" id="sound" checked> 딸깍 소리</label>
     <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
     <div class="reginfo" id="regInfo"></div>
@@ -270,7 +267,7 @@ const statusEl = $("status");
 
 /* ---------------- 설정 ---------------- */
 const ui = {};
-for (const id of ["mode","intensity","dark","kelvin","shadow","virtual","finger","refine","sound","debug"]) ui[id] = $(id);
+for (const id of ["mode","intensity","dark","kelvin","shadow","virtual","sound","debug"]) ui[id] = $(id);
 function readUI() {
   $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
   $("vDark").textContent = Math.round(ui.dark.value * 100) + "%";
@@ -359,33 +356,6 @@ function click(on) {
   } catch (e) {}
 }
 
-/* ---------------- 밝은 물체 보정 ---------------- */
-const small = document.createElement("canvas"); small.width = 96; small.height = 54;
-const sctx = small.getContext("2d", { willReadFrequently: true });
-let smallData = null;
-function refineBright(est, R) {
-  if (!smallData) return null;
-  const data = smallData, W = small.width, H = small.height;
-  const cx = (1 - est.x) * W, cy = est.y * H, rad = R * 2.2 * H;
-  let peak = 0, sum = 0, n = 0;
-  const x0 = Math.max(0, cx - rad | 0), x1 = Math.min(W - 1, cx + rad | 0);
-  const y0 = Math.max(0, cy - rad | 0), y1 = Math.min(H - 1, cy + rad | 0);
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    const i = (y * W + x) * 4, l = (0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2]) / 255;
-    if (l > peak) peak = l; sum += l; n++;
-  }
-  if (!n) return null;
-  const avg = sum / n;
-  if (peak < 0.8 || peak - avg < 0.25) return null;
-  let wx = 0, wy = 0, w = 0;
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    const i = (y * W + x) * 4, l = (0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2]) / 255;
-    if (l > peak * 0.9) { wx += x; wy += y; w++; }
-  }
-  if (w < 2) return null;
-  return { x: 1 - (wx / w + 0.5) / W, y: (wy / w + 0.5) / H };
-}
-
 /* ---------------- 손 → 전구 위치 / 손가락 끝 ---------------- */
 function updateHand(H, lms, now) {
   const P = lms.map(p => ({ x: 1 - p.x, y: p.y }));      // 거울 좌표
@@ -396,11 +366,7 @@ function updateHand(H, lms, now) {
   let dx = m.x - w.x, dy = m.y - w.y; const Lp = Math.hypot(dx, dy) || 0.1; dx /= Lp; dy /= Lp;
   // 주먹 쥔 손 위쪽(손가락 마디 방향)에 전구가 있다고 가정
   const R = Lp * 0.62;
-  let est = { x: (palm.x + dx * Lp * 1.25) / aspect, y: palm.y + dy * Lp * 1.25 };
-  if (ui.refine.checked) {
-    const r = refineBright(est, R);
-    if (r) est = { x: est.x * 0.35 + r.x * 0.65, y: est.y * 0.35 + r.y * 0.65 };
-  }
+  const est = { x: (palm.x + dx * Lp * 1.25) / aspect, y: palm.y + dy * Lp * 1.25 };
   // 검지 끝(8번)에서 손가락 방향으로 아주 살짝 앞
   const t8 = ax(P[8]), t7 = ax(P[7]);
   let fx = t8.x - t7.x, fy = t8.y - t7.y; const fl = Math.hypot(fx, fy) || 1;
@@ -584,19 +550,16 @@ function stepLight(o, want, idle, now, dt) {
   o.I += (target - o.I) * Math.min(1, dt * (o.on ? 10 : 7));
 }
 function stepHands(now, dt) {
-  const fingerI = ui.finger.checked && !RS.phase && ui.mode.value !== "click" ? +ui.intensity.value * 0.5 : 0;
   for (const [key, H] of hands) {
     if (H.seen && now - H.lastSeen > 250) H.seen = false;
     const want = bulbWanted(H);
-    stepLight(H, want, H.seen ? fingerI : 0, now, dt);
-    // 빛 위치·크기: 전구면 전구 자리, 아니면 검지 끝
-    const tgt = H.on ? H.bulbEst : H.tip;
-    const tR = H.on ? H.bulbR : H.Lp * 0.24;
+    stepLight(H, want, 0, now, dt);   // 빈손이면 아무 빛도 없음
+    const tgt = H.bulbEst, tR = H.bulbR;
     if (!H.L) H.L = { x: tgt.x, y: tgt.y };
     const k = Math.min(1, dt * 18);
     H.L.x += (tgt.x - H.L.x) * k; H.L.y += (tgt.y - H.L.y) * k;
     H.R += (tR - H.R) * Math.min(1, dt * 12);
-    H.type = H.on ? 1 : 0;
+    H.type = 1;
     if (!H.seen && H.I < 0.005) hands.delete(key);
   }
   stepLight(manual, ui.mode.value === "click" && manual.on, 0, now, dt);
@@ -635,10 +598,6 @@ function loop() {
 
   if (video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
-    if (ui.refine.checked) {
-      sctx.drawImage(video, 0, 0, small.width, small.height);
-      smallData = sctx.getImageData(0, 0, small.width, small.height).data;
-    }
     if (handLM) {
       const r = handLM.detectForVideo(video, now);
       const used = new Set();
@@ -718,7 +677,7 @@ function updateStatus() {
   else if (RS.phase) msg = "전구 등록 중…";
   else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
   else if (anyOn) msg = "<b>💡 켜짐</b>";
-  else if (!vis.length) msg = "손이나 전구를 카메라에 보여 주세요";
+  else if (!vis.length) msg = "전구를 카메라에 보여 주세요";
   else if (!isRegistered()) msg = "<b>내 전구</b>를 등록하면 전구를 들었을 때 켜져요";
   else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
   else msg = "전구를 들면 켜져요";
