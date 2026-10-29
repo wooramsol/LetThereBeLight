@@ -12,6 +12,7 @@
     --text: #f2efe8; --muted: #a29e95; --accent: #ffc861;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", system-ui, sans-serif; overflow: hidden; }
   #stage { position: fixed; inset: 0; }
@@ -95,7 +96,8 @@
     <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
     <ul>
       <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>처음에 10초 동안 <b>내 전구를 등록</b>하면, 빈손에는 반응하지 않고 전구를 들었을 때만 켜져요.</li>
+      <li>처음에 10초 동안 <b>내 전구를 등록</b>하면, 전구를 들었을 때만 전구에 불이 켜져요.</li>
+      <li>전구 없이 손을 보여 주면 양손 검지 끝에 작은 빛이 맺혀요.</li>
       <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
     </ul>
     <button class="primary" id="start">카메라 켜고 시작</button>
@@ -132,6 +134,7 @@
     <label><span>색온도 <i id="vKelvin"></i></span><input type="range" id="kelvin" min="1800" max="6000" step="100" value="2700"></label>
     <label><span>배경 그림자 <i id="vShadow"></i></span><input type="range" id="shadow" min="0" max="1" step="0.05" value="0.7"></label>
     <label class="check"><input type="checkbox" id="virtual"> 화면에 가상 전구 겹쳐 그리기</label>
+    <label class="check"><input type="checkbox" id="finger" checked> 전구가 없으면 검지 끝에 빛 (양손)</label>
     <label class="check"><input type="checkbox" id="refine" checked> 실제 전구 위치 보정 (밝은 물체 추적)</label>
     <label class="check"><input type="checkbox" id="sound" checked> 딸깍 소리</label>
     <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
@@ -155,12 +158,18 @@ void main(){ vUv = vec2((p.x+1.0)*0.5, (1.0-p.y)*0.5); gl_Position = vec4(p,0.0,
 <script type="x-shader/x-fragment" id="fs">
 #version 300 es
 precision highp float;
+#define MAXL 3
 in vec2 vUv; out vec4 outColor;
 uniform sampler2D uVideo, uMask;
-uniform float uAspect, uI, uAmb, uShadow, uVirtual, uR, uHasMask, uDebug, uTime;
-uniform vec2 uL, uDir;
+uniform float uAspect, uAmb, uShadow, uVirtual, uHasMask, uDebug, uTime;
 uniform vec3 uWarm;
-uniform vec2 uHand[21];
+uniform int uN;                 // 빛 개수
+uniform vec2 uL[MAXL];          // 빛 위치
+uniform vec2 uDir[MAXL];        // 전구 방향(손목→손가락)
+uniform float uR[MAXL];         // 크기
+uniform float uI[MAXL];         // 밝기
+uniform float uT[MAXL];         // 1 = 전구, 0 = 손가락 끝 빛
+uniform vec2 uHand[42];         // 양손 랜드마크
 uniform int uHandN;
 
 vec2 mir(vec2 uv){ return vec2(1.0 - uv.x, uv.y); }       // 거울 모드
@@ -171,78 +180,81 @@ void main(){
   vec2 uv = vUv;
   vec3 srgb = texture(uVideo, mir(uv)).rgb;
   vec3 lin = pow(srgb, vec3(2.2));
-
   float pm = smoothstep(0.25, 0.75, person(uv));
-  float d  = distance(A(uv), A(uL));
-  float R  = max(uR, 0.02);
 
-  // 1) 거리 감쇠: 사람(가까움)은 강하고 좁게, 배경(멀리)은 약하고 넓게
-  float Ip = 1.0 / (1.0 + pow(d / (R * 3.2), 2.0));
-  float Ib = 0.55 / (1.0 + pow(d / (R * 6.5), 2.0));
-
-  // 2) 배경에 드리우는 사람 그림자: 전구 방향으로 마스크를 거슬러 샘플링
-  float sh = 0.0;
-  for (int i = 1; i <= 8; i++) {
-    float k = 0.035 * float(i);
-    sh += smoothstep(0.3, 0.8, person(uv + (uL - uv) * k));
-  }
-  sh = (sh / 8.0) * uShadow * (1.0 - pm);
-  float L = mix(Ib * (1.0 - 0.9 * sh), Ip, pm);
-
-  // 3) 전구를 쥔 손: 더 밝게 + 빛이 비쳐 붉게 물드는 효과
+  // 가장 가까운 손 랜드마크까지 거리
   float dh = 10.0;
-  for (int i = 0; i < 21; i++) { if (i >= uHandN) break; dh = min(dh, distance(A(uv), A(uHand[i]))); }
-  float hand = exp(-pow(dh / (R * 0.9), 2.0)) * max(pm, 0.35);
-  float nearBulb = exp(-pow(d / (R * 2.2), 2.0));
-  vec3 sss = vec3(1.0, 0.28, 0.10) * hand * nearBulb * 1.4;
+  for (int i = 0; i < 42; i++) { if (i >= uHandN) break; dh = min(dh, distance(A(uv), A(uHand[i]))); }
 
-  // 흔들리는 빛
   float flick = 1.0 + 0.025 * sin(uTime * 23.0) * sin(uTime * 7.3);
-  float I = uI * flick;
+  vec3 light = vec3(0.0), sss = vec3(0.0);
 
-  vec3 light = uWarm * (L * 2.6 + hand * 0.9) * I;
-  vec3 col = lin * (uAmb + light) + lin * sss * I;
+  // 1) 각 빛이 사람/손/배경을 비춤
+  for (int j = 0; j < MAXL; j++) {
+    if (j >= uN) break;
+    float I = uI[j] * flick;
+    if (I < 0.002) continue;
+    float R  = max(uR[j], 0.012);
+    float Rr = max(R, 0.05);                       // 빛이 닿는 범위 (손가락 빛도 너무 좁지 않게)
+    float d  = distance(A(uv), A(uL[j]));
+    float Ip = 1.0 / (1.0 + pow(d / (Rr * 3.2), 2.0));
+    float Ib = 0.55 / (1.0 + pow(d / (Rr * 6.5), 2.0));
+    float sh = 0.0;                                // 배경에 드리우는 사람 그림자
+    for (int i = 1; i <= 8; i++) sh += smoothstep(0.3, 0.8, person(uv + (uL[j] - uv) * (0.035 * float(i))));
+    sh = (sh / 8.0) * uShadow * (1.0 - pm);
+    float L = mix(Ib * (1.0 - 0.9 * sh), Ip, pm);
+    float hand = exp(-pow(dh / (Rr * 0.9), 2.0)) * max(pm, 0.35);
+    float nearL = exp(-pow(d / (Rr * 2.2), 2.0));
+    light += uWarm * (L * 2.6 + hand * nearL * 0.9) * I;
+    sss += vec3(1.0, 0.28, 0.10) * hand * nearL * 1.4 * I;   // 빛이 비쳐 붉게 물드는 손
+  }
+  vec3 col = lin * (uAmb + light) + lin * sss;
 
-  // 4) 전구 자체의 빛번짐
-  vec2 q = A(uv) - A(uL);
-  vec2 dir = normalize(uDir + vec2(1e-5));
-  vec2 per = vec2(-dir.y, dir.x);
-  float al = dot(q, dir), ac = dot(q, per);
+  // 2) 빛 자체 (빛번짐, 별빛, 가상 전구)
+  for (int j = 0; j < MAXL; j++) {
+    if (j >= uN) break;
+    float I = uI[j] * flick;
+    if (I < 0.002) continue;
+    float R = max(uR[j], 0.012);
+    vec2 q = A(uv) - A(uL[j]);
+    float d = length(q);
+    vec2 dir = normalize(uDir[j] + vec2(1e-5));
+    vec2 per = vec2(-dir.y, dir.x);
+    float al = dot(q, dir), ac = dot(q, per);
 
-  if (uVirtual > 0.5) {
-    // 유리구 + 목 + 소켓
-    float glass = length(q) - R;
-    float neckW = mix(R * 0.42, R * 0.62, smoothstep(-R * 1.5, -R * 0.6, al));
-    float neck  = max(abs(ac) - neckW, max(-al - R * 1.5, al + R * 0.4));
-    float shape = min(glass, neck);
-    float gm = smoothstep(0.004, -0.004, shape);
-    float base = smoothstep(0.004, -0.004, max(abs(ac) - R * 0.43, max(-al - R * 2.1, al + R * 1.35)));
-    // 꺼진 유리
-    vec3 off = vec3(0.78, 0.82, 0.86);
-    float rim = smoothstep(-R * 0.25, 0.0, glass) * gm;
-    float spec = exp(-pow(length(q - (-dir * 0.0 + per * 0.0) - (dir * R * 0.45 + per * R * 0.4)) / (R * 0.18), 2.0));
-    vec3 glassCol = lin * (uAmb + light) * 0.6 + off * (0.08 + rim * 0.35) + spec * 0.5;
-    // 켜진 필라멘트/코어
-    float fil = exp(-pow(abs(ac) / (R * 0.06), 2.0)) * exp(-pow((al - R * 0.05) / (R * 0.35), 2.0));
-    vec3 lit = uWarm * (1.6 + 2.5 * exp(-pow(length(q) / R, 2.0))) + vec3(1.0, 0.95, 0.85) * fil * 4.0;
-    glassCol = mix(glassCol, lit, clamp(I, 0.0, 1.0));
-    col = mix(col, glassCol, gm);
-    // 금속 소켓
-    float ridges = 0.6 + 0.4 * sin(al / R * 38.0);
-    vec3 metal = vec3(0.55, 0.53, 0.5) * ridges * (0.15 + 0.85 * clamp(uAmb + I * 0.8, 0.0, 1.5));
-    col = mix(col, metal, base * (1.0 - gm));
+    if (uT[j] > 0.5) {
+      if (uVirtual > 0.5) {
+        float glass = d - R;
+        float neckW = mix(R * 0.42, R * 0.62, smoothstep(-R * 1.5, -R * 0.6, al));
+        float neck  = max(abs(ac) - neckW, max(-al - R * 1.5, al + R * 0.4));
+        float gm = smoothstep(0.004, -0.004, min(glass, neck));
+        float base = smoothstep(0.004, -0.004, max(abs(ac) - R * 0.43, max(-al - R * 2.1, al + R * 1.35)));
+        float fil = exp(-pow(abs(ac) / (R * 0.06), 2.0)) * exp(-pow((al - R * 0.05) / (R * 0.35), 2.0));
+        vec3 lit = uWarm * (1.6 + 2.5 * exp(-pow(d / R, 2.0))) + vec3(1.0, 0.95, 0.85) * fil * 4.0;
+        col = mix(col, lit, gm * clamp(I, 0.0, 1.0));
+        float ridges = 0.6 + 0.4 * sin(al / R * 38.0);
+        vec3 metal = vec3(0.55, 0.53, 0.5) * ridges * (0.15 + 0.85 * clamp(uAmb + I * 0.8, 0.0, 1.5));
+        col = mix(col, metal, base * (1.0 - gm));
+      }
+      float g1 = exp(-pow(d / (R * 0.7), 2.0));
+      float g2 = exp(-pow(d / (R * 2.4), 2.0));
+      float g3 = exp(-pow(d / (R * 7.0), 2.0));
+      float streak = exp(-pow(ac / (R * 0.12), 2.0)) * exp(-pow(al / (R * 6.0), 2.0));
+      col += (vec3(1.0, 0.97, 0.9) * g1 * 1.8 + uWarm * g2 * 0.7 + uWarm * g3 * 0.18 + uWarm * streak * 0.08) * I;
+    } else {
+      // 손가락 끝에 맺힌 작은 빛: 밝은 핵 + 번짐 + 십자 별빛
+      float core = exp(-pow(d / (R * 0.32), 2.0));
+      float halo = exp(-pow(d / (R * 1.3), 2.0));
+      float wide = exp(-pow(d / (R * 5.0), 2.0));
+      float tw = 0.85 + 0.15 * sin(uTime * 9.0 + float(j) * 2.1);
+      float star = exp(-pow(q.x / (R * 0.05), 2.0)) * exp(-pow(q.y / (R * 2.6 * tw), 2.0))
+                 + exp(-pow(q.y / (R * 0.05), 2.0)) * exp(-pow(q.x / (R * 2.6 * tw), 2.0));
+      col += (vec3(1.0, 0.98, 0.94) * core * 2.4 + uWarm * halo * 0.9 + uWarm * wide * 0.22 + mix(vec3(1.0), uWarm, 0.4) * star * 0.45) * I;
+    }
   }
 
-  float g1 = exp(-pow(d / (R * 0.7), 2.0));
-  float g2 = exp(-pow(d / (R * 2.4), 2.0));
-  float g3 = exp(-pow(d / (R * 7.0), 2.0));
-  float streak = exp(-pow(ac / (R * 0.12), 2.0)) * exp(-pow(al / (R * 6.0), 2.0));
-  col += (vec3(1.0, 0.97, 0.9) * g1 * 1.8 + uWarm * g2 * 0.7 + uWarm * g3 * 0.18 + uWarm * streak * 0.08) * I;
-
-  // 톤매핑 + 감마
   col = col * (1.0 + col / 6.0) / (1.0 + col);
   col = pow(col, vec3(1.0 / 2.2));
-
   if (uDebug > 0.5) col = mix(col, vec3(0.1, 0.6, 1.0), pm * 0.35);
   outColor = vec4(col, 1.0);
 }
@@ -258,7 +270,7 @@ const statusEl = $("status");
 
 /* ---------------- 설정 ---------------- */
 const ui = {};
-for (const id of ["mode","intensity","dark","kelvin","shadow","virtual","refine","sound","debug"]) ui[id] = $(id);
+for (const id of ["mode","intensity","dark","kelvin","shadow","virtual","finger","refine","sound","debug"]) ui[id] = $(id);
 function readUI() {
   $("vIntensity").textContent = (+ui.intensity.value).toFixed(2);
   $("vDark").textContent = Math.round(ui.dark.value * 100) + "%";
@@ -284,6 +296,7 @@ if (!gl) { $("err").textContent = "이 브라우저는 WebGL2를 지원하지 �
 
 const VS = document.getElementById("vs").textContent.trim();
 const FS = document.getElementById("fs").textContent.trim();
+const MAXL = 3;
 
 function compile(type, src) {
   const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
@@ -303,7 +316,8 @@ function initGL() {
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, "p");
   gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  for (const n of ["uVideo","uMask","uAspect","uI","uAmb","uShadow","uVirtual","uR","uHasMask","uDebug","uTime","uL","uDir","uWarm","uHand","uHandN"])
+  for (const n of ["uVideo","uMask","uAspect","uAmb","uShadow","uVirtual","uHasMask","uDebug","uTime","uWarm",
+                   "uN","uL","uDir","uR","uI","uT","uHand","uHandN"])
     U[n] = gl.getUniformLocation(prog, n);
   const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -315,11 +329,18 @@ function initGL() {
 }
 
 /* ---------------- 상태 ---------------- */
-const S = {
-  hasHand: false, hand: [], bulb: { x: 0.5, y: 0.4 }, dir: { x: 0, y: -1 }, R: 0.07,
-  on: false, manualOn: false, I: 0, flickerT: -1, lastSeen: 0,
-  mask: null, maskW: 0, maskH: 0, hasMask: false,
-};
+const S = { mask: null, maskW: 0, maskH: 0, hasMask: false, maskDirty: false };
+// 클릭 모드용 수동 전구
+const manual = { on: false, I: 0, flickerT: -1, L: { x: 0.5, y: 0.38 }, R: 0.07, dir: { x: 0, y: -1 } };
+// 손별 상태 (최대 2개, 왼손/오른손으로 구분)
+const hands = new Map();
+function newHand() {
+  return { P: [], seen: false, lastSeen: 0, Lp: 0.1,
+    bulbEst: { x: 0.5, y: 0.5 }, tip: { x: 0.5, y: 0.5 }, dir: { x: 0, y: -1 }, bulbR: 0.07,
+    L: null, R: 0.03, type: 0,
+    cropC: { x: 0.5, y: 0.5 }, cropS: 0.3, bulbP: 0, hasBulb: false, lastEmbed: 0,
+    on: false, I: 0, flickerT: -1 };
+}
 let handLM = null, segm = null, aspect = 16 / 9;
 
 /* ---------------- 소리 ---------------- */
@@ -341,11 +362,10 @@ function click(on) {
 /* ---------------- 밝은 물체 보정 ---------------- */
 const small = document.createElement("canvas"); small.width = 96; small.height = 54;
 const sctx = small.getContext("2d", { willReadFrequently: true });
+let smallData = null;
 function refineBright(est, R) {
-  // 거울 좌표 → 원본 좌표
-  sctx.drawImage(video, 0, 0, small.width, small.height);
-  const { data } = sctx.getImageData(0, 0, small.width, small.height);
-  const W = small.width, H = small.height;
+  if (!smallData) return null;
+  const data = smallData, W = small.width, H = small.height;
   const cx = (1 - est.x) * W, cy = est.y * H, rad = R * 2.2 * H;
   let peak = 0, sum = 0, n = 0;
   const x0 = Math.max(0, cx - rad | 0), x1 = Math.min(W - 1, cx + rad | 0);
@@ -366,52 +386,55 @@ function refineBright(est, R) {
   return { x: 1 - (wx / w + 0.5) / W, y: (wy / w + 0.5) / H };
 }
 
-/* ---------------- 손 → 전구 위치 ---------------- */
-function updateFromHand(lms, now) {
-  // 거울 좌표로 변환, 화면비 보정 공간에서 계산
-  const P = lms.map(p => ({ x: 1 - p.x, y: p.y }));
-  S.hand = P;
+/* ---------------- 손 → 전구 위치 / 손가락 끝 ---------------- */
+function updateHand(H, lms, now) {
+  const P = lms.map(p => ({ x: 1 - p.x, y: p.y }));      // 거울 좌표
+  H.P = P;
   const ax = v => ({ x: v.x * aspect, y: v.y });
   const w = ax(P[0]), m = ax(P[9]);
   const palm = [0, 5, 9, 13, 17].map(i => ax(P[i])).reduce((a, b) => ({ x: a.x + b.x / 5, y: a.y + b.y / 5 }), { x: 0, y: 0 });
   let dx = m.x - w.x, dy = m.y - w.y; const Lp = Math.hypot(dx, dy) || 0.1; dx /= Lp; dy /= Lp;
   // 주먹 쥔 손 위쪽(손가락 마디 방향)에 전구가 있다고 가정
   const R = Lp * 0.62;
-  let bx = (palm.x + dx * Lp * 1.25) / aspect, by = palm.y + dy * Lp * 1.25;
-  let est = { x: bx, y: by };
+  let est = { x: (palm.x + dx * Lp * 1.25) / aspect, y: palm.y + dy * Lp * 1.25 };
   if (ui.refine.checked) {
     const r = refineBright(est, R);
     if (r) est = { x: est.x * 0.35 + r.x * 0.65, y: est.y * 0.35 + r.y * 0.65 };
   }
-  const k = S.hasHand ? 0.45 : 1;   // 부드럽게 따라가기
-  S.bulb.x += (est.x - S.bulb.x) * k; S.bulb.y += (est.y - S.bulb.y) * k;
-  S.dir.x += (dx - S.dir.x) * k; S.dir.y += (dy - S.dir.y) * k;
-  S.R += (R - S.R) * k;
+  // 검지 끝(8번)에서 손가락 방향으로 아주 살짝 앞
+  const t8 = ax(P[8]), t7 = ax(P[7]);
+  let fx = t8.x - t7.x, fy = t8.y - t7.y; const fl = Math.hypot(fx, fy) || 1;
+  const tip = { x: (t8.x + fx / fl * Lp * 0.06) / aspect, y: t8.y + fy / fl * Lp * 0.06 };
+
+  const k = H.seen ? 0.45 : 1;
+  H.bulbEst.x += (est.x - H.bulbEst.x) * k; H.bulbEst.y += (est.y - H.bulbEst.y) * k;
+  H.tip.x += (tip.x - H.tip.x) * (H.seen ? 0.6 : 1); H.tip.y += (tip.y - H.tip.y) * (H.seen ? 0.6 : 1);
+  H.dir.x += (dx - H.dir.x) * k; H.dir.y += (dy - H.dir.y) * k;
+  H.bulbR += (R - H.bulbR) * k;
+  H.Lp = Lp;
   // 전구 판별용 잘라낼 영역: 손 + 그 위쪽(전구가 있을 자리)
-  S.cropC = { x: (palm.x + dx * Lp * 0.75) / aspect, y: palm.y + dy * Lp * 0.75 };
-  S.cropS = Lp * 3.4;
-  S.hasHand = true; S.lastSeen = now;
+  H.cropC = { x: (palm.x + dx * Lp * 0.75) / aspect, y: palm.y + dy * Lp * 0.75 };
+  H.cropS = Lp * 3.4;
+  H.seen = true; H.lastSeen = now;
 }
 
 /* ---------------- 내 전구 등록 (즉석 학습: 임베딩 + kNN) ---------------- */
 const crop = document.createElement("canvas"); crop.width = crop.height = 192;
 const cctx = crop.getContext("2d", { willReadFrequently: true });
-let embedder = null, lastEmbedT = 0;
+let embedder = null, lastEmbedT = 0, previewHand = null;
 const REG_KEY = "bulb-light-reg-v1";
 const reg = { pos: [], neg: [] };           // pos = 전구 든 손, neg = 빈손
-S.bulbP = 0; S.hasBulb = false;
 
-function cropHand() {
+function cropHand(H) {
   const vw = video.videoWidth, vh = video.videoHeight;
-  const size = S.cropS * vh, cx = (1 - S.cropC.x) * vw, cy = S.cropC.y * vh;
+  const size = H.cropS * vh, cx = (1 - H.cropC.x) * vw, cy = H.cropC.y * vh;
   cctx.fillStyle = "#000"; cctx.fillRect(0, 0, crop.width, crop.height);
   cctx.drawImage(video, cx - size / 2, cy - size / 2, size, size, 0, 0, crop.width, crop.height);
+  previewHand = H;
 }
-function embedNow() {
-  cropHand();
-  const r = embedder.embed(crop);
-  const e = r.embeddings[0].floatEmbedding;
-  return Float32Array.from(e);
+function embedHand(H) {
+  cropHand(H);
+  return Float32Array.from(embedder.embed(crop).embeddings[0].floatEmbedding);
 }
 function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
 function classify(e) {
@@ -452,11 +475,11 @@ function loadReg() {
 loadReg();
 
 // 등록 진행
-const RS = { phase: null, t0: 0 };
+const RS = { phase: null, t0: 0, tmpPos: [], tmpNeg: [] };
 const PHASES = {
-  prepNeg: { next: "neg", dur: 3000, step: "1 / 2 단계", title: "빈손을 보여 주세요", desc: "전구 없이 손만 카메라 앞에 두고, 주먹도 쥐었다 폈다 천천히 움직여 주세요." },
+  prepNeg: { next: "neg", dur: 3000, step: "1 / 2 단계", title: "빈손을 보여 주세요", desc: "한 손만 카메라 앞에 두고, 주먹도 쥐었다 폈다 천천히 움직여 주세요." },
   neg:     { next: "prepPos", dur: 5000, rec: "neg", step: "1 / 2 단계 · 기록 중", title: "빈손 기록 중", desc: "손을 돌리고 위아래로 움직여 주세요." },
-  prepPos: { next: "pos", dur: 3000, step: "2 / 2 단계", title: "이제 전구를 들어 주세요", desc: "평소처럼 전구를 쥐고 카메라에 보여 주세요." },
+  prepPos: { next: "pos", dur: 3000, step: "2 / 2 단계", title: "이제 전구를 들어 주세요", desc: "한 손으로 평소처럼 전구를 쥐고 카메라에 보여 주세요." },
   pos:     { next: "done", dur: 5000, rec: "pos", step: "2 / 2 단계 · 기록 중", title: "전구 기록 중", desc: "전구를 든 채로 이리저리 움직이고 기울여 주세요." },
 };
 function startReg() {
@@ -478,6 +501,7 @@ function setPhase(ph) {
   }
   const P = PHASES[ph];
   $("regStep").textContent = P.step; $("regTitle").textContent = P.title; $("regDesc").textContent = P.desc;
+  $("regCount").textContent = ""; $("regBar").style.width = "0%";
 }
 function cancelReg() { RS.phase = null; $("reg").hidden = true; refreshRegUI(); }
 function stepReg(now) {
@@ -487,9 +511,9 @@ function stepReg(now) {
   if (P.rec) {
     const n = (P.rec === "pos" ? RS.tmpPos : RS.tmpNeg).length;
     $("regCount").textContent = n + "장";
-    $("regWarn").textContent = S.hasHand ? "" : "손이 안 보여요. 화면 안으로 손을 넣어 주세요.";
+    $("regWarn").textContent = visibleHands().length ? "" : "손이 안 보여요. 화면 안으로 손을 넣어 주세요.";
   } else {
-    $("regCount").textContent = Math.ceil((P.dur - el) / 1000);
+    $("regCount").textContent = Math.max(1, Math.ceil((P.dur - el) / 1000));
     $("regWarn").textContent = "";
   }
   if (el >= P.dur) setPhase(P.next);
@@ -498,7 +522,7 @@ function refreshRegUI() {
   const ok = isRegistered();
   $("regInfo").innerHTML = ok
     ? "<b>전구 등록됨</b> · 전구 " + reg.pos.length + "장 / 빈손 " + reg.neg.length + "장"
-    : "아직 등록된 전구가 없어요. 등록해야 전구를 들었을 때만 켜져요.";
+    : "아직 등록된 전구가 없어요. 등록해야 전구를 들었을 때 켜져요.";
   $("regCta").hidden = ok || !!RS.phase || $("panel").hidden;
   updateStatus();
 }
@@ -507,51 +531,75 @@ $("regCta").addEventListener("click", startReg);
 $("regCancel").addEventListener("click", cancelReg);
 $("regReset").addEventListener("click", () => {
   reg.pos = []; reg.neg = []; try { localStorage.removeItem(REG_KEY); } catch (e) {}
-  S.hasBulb = false; S.bulbP = 0; refreshRegUI();
+  hands.forEach(H => { H.hasBulb = false; H.bulbP = 0; });
+  refreshRegUI();
 });
 
-// 매 프레임: 등록 중이면 샘플 수집, 아니면 전구 판별
+const visibleHands = () => [...hands.values()].filter(H => H.seen);
+
+// 손마다: 등록 중이면 샘플 수집, 아니면 전구 판별
 function stepBulb(now) {
-  if (!embedder || !S.hasHand) {
-    if (!S.hasHand) { S.bulbP *= 0.8; if (S.bulbP < 0.4) S.hasBulb = false; }
-    return;
-  }
-  if (now - lastEmbedT < 90) return;
-  lastEmbedT = now;
+  if (!embedder) return;
+  const vis = visibleHands();
   const P = RS.phase && PHASES[RS.phase];
   if (P && P.rec) {
-    (P.rec === "pos" ? RS.tmpPos : RS.tmpNeg).push(embedNow());
+    // 등록은 가장 크게 보이는 손 하나만
+    if (!vis.length || now - lastEmbedT < 90) return;
+    lastEmbedT = now;
+    const H = vis.reduce((a, b) => (b.Lp > a.Lp ? b : a));
+    (P.rec === "pos" ? RS.tmpPos : RS.tmpNeg).push(embedHand(H));
     return;
   }
-  if (RS.phase || !isRegistered()) return;
-  const p = classify(embedNow());
-  S.bulbP += (p - S.bulbP) * 0.45;
-  if (S.bulbP > 0.62) S.hasBulb = true;
-  else if (S.bulbP < 0.38) S.hasBulb = false;
+  if (RS.phase || !isRegistered()) { hands.forEach(H => { H.hasBulb = false; H.bulbP = 0; }); return; }
+  for (const H of vis) {
+    if (now - H.lastEmbed < 90) continue;
+    H.lastEmbed = now;
+    const p = classify(embedHand(H));
+    H.bulbP += (p - H.bulbP) * 0.45;
+    if (H.bulbP > 0.62) H.hasBulb = true;
+    else if (H.bulbP < 0.38) H.hasBulb = false;
+  }
 }
 
 /* ---------------- 켜짐 판단 + 깜빡임 ---------------- */
-const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];  // 켜질 때 형광등처럼 파르르
-function targetOn() {
+const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];  // 켜질 때 파르르
+function bulbWanted(H) {
+  if (!H.seen || !H.hasBulb || RS.phase) return false;
   const mode = ui.mode.value;
-  if (mode === "click") return S.manualOn;
-  if (!S.hasHand || !S.hasBulb || RS.phase) return false;
-  if (mode === "raise") return S.bulb.y < 0.42;
+  if (mode === "click") return false;
+  if (mode === "raise") return H.bulbEst.y < 0.42;
   return true;
 }
-function stepIntensity(now, dt) {
-  const want = targetOn();
-  if (want && !S.on) { S.on = true; S.flickerT = now; click(true); }
-  if (!want && S.on) { S.on = false; S.flickerT = -1; click(false); }
+function stepLight(o, want, idle, now, dt) {
+  // o.on: 전구 켜짐 / idle: 켜지지 않았을 때의 밝기 (손가락 빛)
+  if (want && !o.on) { o.on = true; o.flickerT = now; click(true); }
+  if (!want && o.on) { o.on = false; o.flickerT = -1; click(false); }
   const max = +ui.intensity.value;
-  let target = S.on ? max : 0;
-  if (S.on && S.flickerT >= 0) {
-    const e = (now - S.flickerT) / 70 | 0;
-    if (e < FLICKER.length) target = FLICKER[e] * max; else S.flickerT = -1;
-    S.I = target; return;
+  if (o.on && o.flickerT >= 0) {
+    const e = (now - o.flickerT) / 70 | 0;
+    if (e < FLICKER.length) { o.I = FLICKER[e] * max; return; }
+    o.flickerT = -1;
   }
-  const rate = S.on ? 10 : 7;
-  S.I += (target - S.I) * Math.min(1, dt * rate);
+  const target = o.on ? max : idle;
+  o.I += (target - o.I) * Math.min(1, dt * (o.on ? 10 : 7));
+}
+function stepHands(now, dt) {
+  const fingerI = ui.finger.checked && !RS.phase && ui.mode.value !== "click" ? +ui.intensity.value * 0.5 : 0;
+  for (const [key, H] of hands) {
+    if (H.seen && now - H.lastSeen > 250) H.seen = false;
+    const want = bulbWanted(H);
+    stepLight(H, want, H.seen ? fingerI : 0, now, dt);
+    // 빛 위치·크기: 전구면 전구 자리, 아니면 검지 끝
+    const tgt = H.on ? H.bulbEst : H.tip;
+    const tR = H.on ? H.bulbR : H.Lp * 0.24;
+    if (!H.L) H.L = { x: tgt.x, y: tgt.y };
+    const k = Math.min(1, dt * 18);
+    H.L.x += (tgt.x - H.L.x) * k; H.L.y += (tgt.y - H.L.y) * k;
+    H.R += (tR - H.R) * Math.min(1, dt * 12);
+    H.type = H.on ? 1 : 0;
+    if (!H.seen && H.I < 0.005) hands.delete(key);
+  }
+  stepLight(manual, ui.mode.value === "click" && manual.on, 0, now, dt);
 }
 
 /* ---------------- 디버그 오버레이 ---------------- */
@@ -560,25 +608,26 @@ function drawOverlay() {
   octx.clearRect(0, 0, ovc.width, ovc.height);
   if (!ui.debug.checked) return;
   const W = ovc.width, H = ovc.height;
-  octx.fillStyle = "#4cf";
-  for (const p of S.hand) { octx.beginPath(); octx.arc(p.x * W, p.y * H, 4, 0, 7); octx.fill(); }
-  octx.strokeStyle = "#ffc861"; octx.lineWidth = 2;
-  octx.beginPath(); octx.arc(S.bulb.x * W, S.bulb.y * H, S.R * H, 0, 7); octx.stroke();
-  if (S.hasHand && S.cropC) {
-    const s = S.cropS * H;
+  for (const h of visibleHands()) {
+    octx.fillStyle = "#4cf";
+    for (const p of h.P) { octx.beginPath(); octx.arc(p.x * W, p.y * H, 4, 0, 7); octx.fill(); }
+    octx.strokeStyle = "#ffc861"; octx.lineWidth = 2;
+    octx.beginPath(); octx.arc(h.bulbEst.x * W, h.bulbEst.y * H, h.bulbR * H, 0, 7); octx.stroke();
+    const s = h.cropS * H;
     octx.strokeStyle = "rgba(255,255,255,.5)"; octx.setLineDash([6, 6]);
-    octx.strokeRect(S.cropC.x * W - s / 2, S.cropC.y * H - s / 2, s, s); octx.setLineDash([]);
+    octx.strokeRect(h.cropC.x * W - s / 2, h.cropC.y * H - s / 2, s, s); octx.setLineDash([]);
+    octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(h.cropC.x * W - s / 2, h.cropC.y * H - s / 2 - 26, 150, 24);
+    octx.fillStyle = h.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 14px system-ui";
+    octx.fillText("전구 확률 " + Math.round(h.bulbP * 100) + "%", h.cropC.x * W - s / 2 + 8, h.cropC.y * H - s / 2 - 9);
   }
-  // 모델이 보는 잘라낸 화면 미리보기 (거울 모드로)
+  // 모델이 마지막으로 본 화면 (거울 모드로)
   octx.save(); octx.translate(16 + 160, H - 16 - 160); octx.scale(-1, 1);
   octx.drawImage(crop, 0, 0, 160, 160); octx.restore();
-  octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(16, H - 16 - 160 - 28, 160, 26);
-  octx.fillStyle = S.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 15px system-ui";
-  octx.fillText("전구 확률 " + Math.round(S.bulbP * 100) + "%", 24, H - 16 - 160 - 10);
 }
 
 /* ---------------- 메인 루프 ---------------- */
 let frame = 0, lastT = performance.now(), lastVideoTime = -1, fpsAcc = 0, fpsN = 0, fps = 0;
+const ZERO2 = new Float32Array(MAXL * 2), ZERO1 = new Float32Array(MAXL);
 function loop() {
   requestAnimationFrame(loop);
   const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
@@ -586,10 +635,20 @@ function loop() {
 
   if (video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
+    if (ui.refine.checked) {
+      sctx.drawImage(video, 0, 0, small.width, small.height);
+      smallData = sctx.getImageData(0, 0, small.width, small.height).data;
+    }
     if (handLM) {
       const r = handLM.detectForVideo(video, now);
-      if (r.landmarks && r.landmarks.length) updateFromHand(r.landmarks[0], now);
-      else if (now - S.lastSeen > 250) { S.hasHand = false; S.hand = []; }
+      const used = new Set();
+      (r.landmarks || []).forEach((lms, i) => {
+        let key = (r.handednesses && r.handednesses[i] && r.handednesses[i][0] && r.handednesses[i][0].categoryName) || ("h" + i);
+        if (used.has(key)) key += i;
+        used.add(key);
+        if (!hands.has(key)) hands.set(key, newHand());
+        updateHand(hands.get(key), lms, now);
+      });
     }
     if (segm && frame % 2 === 0) {
       segm.segmentForVideo(video, now, (res) => {
@@ -606,7 +665,21 @@ function loop() {
     frame++;
   }
   stepReg(now);
-  stepIntensity(now, dt);
+  stepHands(now, dt);
+
+  // 빛 목록 만들기
+  const lights = [];
+  for (const H of hands.values()) if (H.L && H.I > 0.002) lights.push({ L: H.L, dir: H.dir, R: H.R, I: H.I, T: H.type });
+  if (manual.I > 0.002) lights.push({ L: manual.L, dir: manual.dir, R: manual.R, I: manual.I, T: 1 });
+  const n = Math.min(MAXL, lights.length);
+  const aL = new Float32Array(MAXL * 2), aD = new Float32Array(MAXL * 2), aR = new Float32Array(MAXL), aI = new Float32Array(MAXL), aT = new Float32Array(MAXL);
+  for (let i = 0; i < n; i++) {
+    const l = lights[i];
+    aL[i * 2] = l.L.x; aL[i * 2 + 1] = l.L.y; aD[i * 2] = l.dir.x; aD[i * 2 + 1] = l.dir.y;
+    aR[i] = l.R; aI[i] = l.I; aT[i] = l.T;
+  }
+  const hp = new Float32Array(84); let hn = 0;
+  for (const H of hands.values()) if (H.seen) for (const p of H.P) { if (hn < 42) { hp[hn * 2] = p.x; hp[hn * 2 + 1] = p.y; hn++; } }
 
   // 렌더
   gl.viewport(0, 0, glc.width, glc.height);
@@ -617,21 +690,18 @@ function loop() {
 
   const dark = +ui.dark.value;
   gl.uniform1f(U.uAspect, aspect);
-  gl.uniform1f(U.uI, S.I);
   gl.uniform1f(U.uAmb, RS.phase ? 0.85 : Math.pow(1 - dark, 1.6));
   gl.uniform1f(U.uShadow, +ui.shadow.value);
-  gl.uniform1f(U.uVirtual, ui.virtual.checked && ((S.hasHand && S.hasBulb) || ui.mode.value === "click") ? 1 : 0);
-  gl.uniform1f(U.uR, S.R);
+  gl.uniform1f(U.uVirtual, ui.virtual.checked ? 1 : 0);
   gl.uniform1f(U.uHasMask, S.hasMask ? 1 : 0);
   gl.uniform1f(U.uDebug, ui.debug.checked ? 1 : 0);
   gl.uniform1f(U.uTime, now / 1000);
-  gl.uniform2f(U.uL, S.bulb.x, S.bulb.y);
-  gl.uniform2f(U.uDir, S.dir.x, S.dir.y);
   gl.uniform3fv(U.uWarm, kelvinToRGB(+ui.kelvin.value));
-  const hp = new Float32Array(42);
-  S.hand.forEach((p, i) => { hp[i * 2] = p.x; hp[i * 2 + 1] = p.y; });
+  gl.uniform1i(U.uN, n);
+  gl.uniform2fv(U.uL, aL); gl.uniform2fv(U.uDir, aD);
+  gl.uniform1fv(U.uR, aR); gl.uniform1fv(U.uI, aI); gl.uniform1fv(U.uT, aT);
   gl.uniform2fv(U.uHand, hp);
-  gl.uniform1i(U.uHandN, S.hand.length);
+  gl.uniform1i(U.uHandN, hn);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   drawOverlay();
@@ -642,13 +712,16 @@ function loop() {
 
 function updateStatus() {
   let msg;
+  const vis = visibleHands();
+  const anyOn = vis.some(H => H.on);
   if (!handLM || !embedder) msg = "인식 모델 불러오는 중…";
   else if (RS.phase) msg = "전구 등록 중…";
-  else if (ui.mode.value !== "click" && !isRegistered()) msg = "먼저 <b>내 전구</b>를 등록해 주세요";
-  else if (ui.mode.value === "click") msg = S.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
-  else if (!S.hasHand || !S.hasBulb) msg = "전구를 들어 카메라에 보여 주세요";
-  else if (ui.mode.value === "raise" && !S.on) msg = "손을 위로 들어 올리면 켜져요";
-  else msg = "<b>💡 켜짐</b>";
+  else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
+  else if (anyOn) msg = "<b>💡 켜짐</b>";
+  else if (!vis.length) msg = "손이나 전구를 카메라에 보여 주세요";
+  else if (!isRegistered()) msg = "<b>내 전구</b>를 등록하면 전구를 들었을 때 켜져요";
+  else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
+  else msg = "전구를 들면 켜져요";
   statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
 }
 
@@ -659,28 +732,28 @@ async function loadModels() {
     try { return await Cls.createFromOptions(fs, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "GPU" } }); }
     catch (e) { return await Cls.createFromOptions(fs, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "CPU" } }); }
   };
-  const [h, s] = await Promise.all([
+  const [h, s, e] = await Promise.all([
     mk(HandLandmarker, {
       baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
-      runningMode: "VIDEO", numHands: 1, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+      runningMode: "VIDEO", numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
     }),
     mk(ImageSegmenter, {
       baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite" },
       runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
     }),
+    mk(ImageEmbedder, {
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite" },
+      runningMode: "IMAGE", l2Normalize: true, quantize: false,
+    }),
   ]);
-  handLM = h; segm = s;
-  embedder = await mk(ImageEmbedder, {
-    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite" },
-    runningMode: "IMAGE", l2Normalize: true, quantize: false,
-  });
+  handLM = h; segm = s; embedder = e;
   // 저장된 등록 데이터가 다른 모델 크기면 버림
-  if (reg.pos.length) { const d = embedNowDim(); if (d && reg.pos[0].length !== d) { reg.pos = []; reg.neg = []; } }
+  if (reg.pos.length) {
+    let d = 0;
+    try { cctx.fillRect(0, 0, crop.width, crop.height); d = embedder.embed(crop).embeddings[0].floatEmbedding.length; } catch (err) {}
+    if (d && reg.pos[0].length !== d) { reg.pos = []; reg.neg = []; }
+  }
   refreshRegUI();
-}
-
-function embedNowDim() {
-  try { cctx.fillRect(0, 0, crop.width, crop.height); return embedder.embed(crop).embeddings[0].floatEmbedding.length; } catch (e) { return 0; }
 }
 
 function resize() {
@@ -698,7 +771,7 @@ $("start").addEventListener("click", async () => {
     });
     video.srcObject = stream; await video.play();
     resize(); video.addEventListener("resize", resize);
-    $("intro").hidden = true; $("intro").style.display = "none";
+    $("intro").hidden = true;
     statusEl.hidden = false; $("panel").hidden = false;
     if (innerWidth < 520) $("panel").open = false;
     requestAnimationFrame(loop);
@@ -714,15 +787,12 @@ $("start").addEventListener("click", async () => {
 });
 
 function toggleManual() {
-  ui.mode.value = "click"; S.manualOn = !S.manualOn; updateStatus();
+  ui.mode.value = "click"; manual.on = !manual.on; updateStatus();
 }
 $("toggle").addEventListener("click", toggleManual);
-$("stage").addEventListener("click", () => { if (ui.mode.value === "click") { S.manualOn = !S.manualOn; updateStatus(); } });
+$("stage").addEventListener("click", () => { if (ui.mode.value === "click") { manual.on = !manual.on; updateStatus(); } });
 addEventListener("keydown", (e) => { if (e.code === "Space" && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT") { e.preventDefault(); toggleManual(); } });
-ui.mode.addEventListener("change", () => {
-  if (ui.mode.value === "click" && !S.hasHand) { S.bulb = { x: 0.5, y: 0.38 }; S.R = 0.07; S.dir = { x: 0, y: -1 }; }
-  updateStatus();
-});
+ui.mode.addEventListener("change", updateStatus);
 
 $("snap").addEventListener("click", () => {
   glc.toBlob((b) => {
