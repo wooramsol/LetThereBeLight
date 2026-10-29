@@ -61,6 +61,23 @@
   #panel .row button { flex: 1; appearance: none; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text);
     border-radius: 10px; padding: 9px 6px; cursor: pointer; font-family: inherit; font-size: 13px; }
   #panel .row button:hover { background: rgba(255,255,255,.12); }
+  #panel .reginfo { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  #panel .reginfo b { color: var(--text); font-weight: 600; }
+
+  /* 전구 등록 */
+  #regCta { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 6;
+    box-shadow: 0 6px 30px rgba(255,200,97,.35); }
+  #reg { position: fixed; inset: 0; z-index: 8; display: grid; place-items: center; pointer-events: none; }
+  #reg .card { pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 22px 26px;
+    text-align: center; max-width: 360px; backdrop-filter: blur(12px); }
+  #reg .step { font-size: 12px; color: var(--accent); font-weight: 600; letter-spacing: .04em; }
+  #reg h2 { margin: 6px 0 6px; font-size: 22px; letter-spacing: -.01em; }
+  #reg p { margin: 0 0 14px; color: var(--muted); font-size: 14px; line-height: 1.55; }
+  #reg .count { font-size: 44px; font-weight: 800; color: var(--accent); line-height: 1.1; min-height: 50px; }
+  #reg .bar { height: 6px; background: rgba(255,255,255,.1); border-radius: 99px; overflow: hidden; margin-top: 10px; }
+  #reg .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
+  #reg .warn { color: #ff9b85; font-size: 13px; min-height: 18px; margin-top: 8px; }
+  #reg .cancel { margin-top: 8px; appearance: none; background: none; border: 0; color: var(--muted); cursor: pointer; font-family: inherit; text-decoration: underline; }
   @media (max-width: 520px) { #panel { left: 16px; right: 16px; width: auto; } }
 </style>
 </head>
@@ -78,7 +95,7 @@
     <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
     <ul>
       <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>전구가 없으면 주먹만 쥐어도 돼요. 가상 전구가 나타나요.</li>
+      <li>처음에 10초 동안 <b>내 전구를 등록</b>하면, 빈손에는 반응하지 않고 전구를 들었을 때만 켜져요.</li>
       <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
     </ul>
     <button class="primary" id="start">카메라 켜고 시작</button>
@@ -87,6 +104,18 @@
 </div>
 
 <div id="status" hidden>준비 중…</div>
+<button class="primary" id="regCta" hidden>🔦 내 전구 등록하기 (10초)</button>
+<div id="reg" hidden>
+  <div class="card">
+    <div class="step" id="regStep"></div>
+    <h2 id="regTitle"></h2>
+    <p id="regDesc"></p>
+    <div class="count" id="regCount"></div>
+    <div class="bar"><i id="regBar"></i></div>
+    <div class="warn" id="regWarn"></div>
+    <button class="cancel" id="regCancel">취소</button>
+  </div>
+</div>
 
 <details id="panel" hidden open>
   <summary>조명 설정</summary>
@@ -102,10 +131,15 @@
     <label><span>방 어둡기 <i id="vDark"></i></span><input type="range" id="dark" min="0" max="0.95" step="0.01" value="0.72"></label>
     <label><span>색온도 <i id="vKelvin"></i></span><input type="range" id="kelvin" min="1800" max="6000" step="100" value="2700"></label>
     <label><span>배경 그림자 <i id="vShadow"></i></span><input type="range" id="shadow" min="0" max="1" step="0.05" value="0.7"></label>
-    <label class="check"><input type="checkbox" id="virtual" checked> 가상 전구 그리기 (전구가 없을 때)</label>
+    <label class="check"><input type="checkbox" id="virtual"> 화면에 가상 전구 겹쳐 그리기</label>
     <label class="check"><input type="checkbox" id="refine" checked> 실제 전구 위치 보정 (밝은 물체 추적)</label>
     <label class="check"><input type="checkbox" id="sound" checked> 딸깍 소리</label>
     <label class="check"><input type="checkbox" id="debug"> 인식 결과 보기</label>
+    <div class="reginfo" id="regInfo"></div>
+    <div class="row">
+      <button id="regBtn">🔦 내 전구 등록</button>
+      <button id="regReset">등록 지우기</button>
+    </div>
     <div class="row">
       <button id="snap">📸 사진 저장</button>
       <button id="toggle">💡 켜기/끄기</button>
@@ -215,7 +249,7 @@ void main(){
 </script>
 
 <script type="module">
-import { FilesetResolver, HandLandmarker, ImageSegmenter }
+import { FilesetResolver, HandLandmarker, ImageSegmenter, ImageEmbedder }
   from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -353,7 +387,147 @@ function updateFromHand(lms, now) {
   S.bulb.x += (est.x - S.bulb.x) * k; S.bulb.y += (est.y - S.bulb.y) * k;
   S.dir.x += (dx - S.dir.x) * k; S.dir.y += (dy - S.dir.y) * k;
   S.R += (R - S.R) * k;
+  // 전구 판별용 잘라낼 영역: 손 + 그 위쪽(전구가 있을 자리)
+  S.cropC = { x: (palm.x + dx * Lp * 0.75) / aspect, y: palm.y + dy * Lp * 0.75 };
+  S.cropS = Lp * 3.4;
   S.hasHand = true; S.lastSeen = now;
+}
+
+/* ---------------- 내 전구 등록 (즉석 학습: 임베딩 + kNN) ---------------- */
+const crop = document.createElement("canvas"); crop.width = crop.height = 192;
+const cctx = crop.getContext("2d", { willReadFrequently: true });
+let embedder = null, lastEmbedT = 0;
+const REG_KEY = "bulb-light-reg-v1";
+const reg = { pos: [], neg: [] };           // pos = 전구 든 손, neg = 빈손
+S.bulbP = 0; S.hasBulb = false;
+
+function cropHand() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const size = S.cropS * vh, cx = (1 - S.cropC.x) * vw, cy = S.cropC.y * vh;
+  cctx.fillStyle = "#000"; cctx.fillRect(0, 0, crop.width, crop.height);
+  cctx.drawImage(video, cx - size / 2, cy - size / 2, size, size, 0, 0, crop.width, crop.height);
+}
+function embedNow() {
+  cropHand();
+  const r = embedder.embed(crop);
+  const e = r.embeddings[0].floatEmbedding;
+  return Float32Array.from(e);
+}
+function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+function classify(e) {
+  const all = [];
+  for (const v of reg.pos) all.push([dot(e, v), 1]);
+  for (const v of reg.neg) all.push([dot(e, v), 0]);
+  all.sort((a, b) => b[0] - a[0]);
+  const k = Math.min(7, all.length);
+  let w = 0, sum = 0;
+  for (let i = 0; i < k; i++) { const wi = Math.max(1e-3, all[i][0]); w += wi; sum += wi * all[i][1]; }
+  return sum / w;
+}
+const isRegistered = () => reg.pos.length >= 8 && reg.neg.length >= 8;
+
+function f32ToB64(arrs) {
+  const dim = arrs[0].length, buf = new Float32Array(dim * arrs.length);
+  arrs.forEach((a, i) => buf.set(a, i * dim));
+  let bin = ""; const u = new Uint8Array(buf.buffer);
+  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return { dim, n: arrs.length, b64: btoa(bin) };
+}
+function b64ToF32(o) {
+  const bin = atob(o.b64), u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  const all = new Float32Array(u.buffer), out = [];
+  for (let i = 0; i < o.n; i++) out.push(all.slice(i * o.dim, (i + 1) * o.dim));
+  return out;
+}
+function saveReg() {
+  try { localStorage.setItem(REG_KEY, JSON.stringify({ pos: f32ToB64(reg.pos), neg: f32ToB64(reg.neg) })); } catch (e) {}
+}
+function loadReg() {
+  try {
+    const o = JSON.parse(localStorage.getItem(REG_KEY) || "null");
+    if (o && o.pos && o.neg) { reg.pos = b64ToF32(o.pos); reg.neg = b64ToF32(o.neg); }
+  } catch (e) { reg.pos = []; reg.neg = []; }
+}
+loadReg();
+
+// 등록 진행
+const RS = { phase: null, t0: 0 };
+const PHASES = {
+  prepNeg: { next: "neg", dur: 3000, step: "1 / 2 단계", title: "빈손을 보여 주세요", desc: "전구 없이 손만 카메라 앞에 두고, 주먹도 쥐었다 폈다 천천히 움직여 주세요." },
+  neg:     { next: "prepPos", dur: 5000, rec: "neg", step: "1 / 2 단계 · 기록 중", title: "빈손 기록 중", desc: "손을 돌리고 위아래로 움직여 주세요." },
+  prepPos: { next: "pos", dur: 3000, step: "2 / 2 단계", title: "이제 전구를 들어 주세요", desc: "평소처럼 전구를 쥐고 카메라에 보여 주세요." },
+  pos:     { next: "done", dur: 5000, rec: "pos", step: "2 / 2 단계 · 기록 중", title: "전구 기록 중", desc: "전구를 든 채로 이리저리 움직이고 기울여 주세요." },
+};
+function startReg() {
+  if (!embedder) { alert("인식 모델을 아직 불러오는 중이에요. 잠시 후 다시 눌러 주세요."); return; }
+  RS.tmpPos = []; RS.tmpNeg = [];
+  setPhase("prepNeg");
+  $("reg").hidden = false; $("regCta").hidden = true;
+}
+function setPhase(ph) {
+  RS.phase = ph; RS.t0 = performance.now();
+  if (ph === "done") {
+    $("reg").hidden = true; RS.phase = null;
+    if (RS.tmpPos.length >= 8 && RS.tmpNeg.length >= 8) {
+      reg.pos = RS.tmpPos; reg.neg = RS.tmpNeg; saveReg();
+    } else {
+      alert("손이 충분히 보이지 않아서 등록하지 못했어요. 손이 화면 안에 잘 보이게 다시 시도해 주세요.");
+    }
+    refreshRegUI(); return;
+  }
+  const P = PHASES[ph];
+  $("regStep").textContent = P.step; $("regTitle").textContent = P.title; $("regDesc").textContent = P.desc;
+}
+function cancelReg() { RS.phase = null; $("reg").hidden = true; refreshRegUI(); }
+function stepReg(now) {
+  if (!RS.phase) return;
+  const P = PHASES[RS.phase], el = now - RS.t0;
+  $("regBar").style.width = Math.min(100, el / P.dur * 100) + "%";
+  if (P.rec) {
+    const n = (P.rec === "pos" ? RS.tmpPos : RS.tmpNeg).length;
+    $("regCount").textContent = n + "장";
+    $("regWarn").textContent = S.hasHand ? "" : "손이 안 보여요. 화면 안으로 손을 넣어 주세요.";
+  } else {
+    $("regCount").textContent = Math.ceil((P.dur - el) / 1000);
+    $("regWarn").textContent = "";
+  }
+  if (el >= P.dur) setPhase(P.next);
+}
+function refreshRegUI() {
+  const ok = isRegistered();
+  $("regInfo").innerHTML = ok
+    ? "<b>전구 등록됨</b> · 전구 " + reg.pos.length + "장 / 빈손 " + reg.neg.length + "장"
+    : "아직 등록된 전구가 없어요. 등록해야 전구를 들었을 때만 켜져요.";
+  $("regCta").hidden = ok || !!RS.phase || $("panel").hidden;
+  updateStatus();
+}
+$("regBtn").addEventListener("click", startReg);
+$("regCta").addEventListener("click", startReg);
+$("regCancel").addEventListener("click", cancelReg);
+$("regReset").addEventListener("click", () => {
+  reg.pos = []; reg.neg = []; try { localStorage.removeItem(REG_KEY); } catch (e) {}
+  S.hasBulb = false; S.bulbP = 0; refreshRegUI();
+});
+
+// 매 프레임: 등록 중이면 샘플 수집, 아니면 전구 판별
+function stepBulb(now) {
+  if (!embedder || !S.hasHand) {
+    if (!S.hasHand) { S.bulbP *= 0.8; if (S.bulbP < 0.4) S.hasBulb = false; }
+    return;
+  }
+  if (now - lastEmbedT < 90) return;
+  lastEmbedT = now;
+  const P = RS.phase && PHASES[RS.phase];
+  if (P && P.rec) {
+    (P.rec === "pos" ? RS.tmpPos : RS.tmpNeg).push(embedNow());
+    return;
+  }
+  if (RS.phase || !isRegistered()) return;
+  const p = classify(embedNow());
+  S.bulbP += (p - S.bulbP) * 0.45;
+  if (S.bulbP > 0.62) S.hasBulb = true;
+  else if (S.bulbP < 0.38) S.hasBulb = false;
 }
 
 /* ---------------- 켜짐 판단 + 깜빡임 ---------------- */
@@ -361,7 +535,7 @@ const FLICKER = [0, 0.7, 0.05, 0.9, 0.25, 1.0];  // 켜질 때 형광등처럼 �
 function targetOn() {
   const mode = ui.mode.value;
   if (mode === "click") return S.manualOn;
-  if (!S.hasHand) return false;
+  if (!S.hasHand || !S.hasBulb || RS.phase) return false;
   if (mode === "raise") return S.bulb.y < 0.42;
   return true;
 }
@@ -390,6 +564,17 @@ function drawOverlay() {
   for (const p of S.hand) { octx.beginPath(); octx.arc(p.x * W, p.y * H, 4, 0, 7); octx.fill(); }
   octx.strokeStyle = "#ffc861"; octx.lineWidth = 2;
   octx.beginPath(); octx.arc(S.bulb.x * W, S.bulb.y * H, S.R * H, 0, 7); octx.stroke();
+  if (S.hasHand && S.cropC) {
+    const s = S.cropS * H;
+    octx.strokeStyle = "rgba(255,255,255,.5)"; octx.setLineDash([6, 6]);
+    octx.strokeRect(S.cropC.x * W - s / 2, S.cropC.y * H - s / 2, s, s); octx.setLineDash([]);
+  }
+  // 모델이 보는 잘라낸 화면 미리보기 (거울 모드로)
+  octx.save(); octx.translate(16 + 160, H - 16 - 160); octx.scale(-1, 1);
+  octx.drawImage(crop, 0, 0, 160, 160); octx.restore();
+  octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(16, H - 16 - 160 - 28, 160, 26);
+  octx.fillStyle = S.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 15px system-ui";
+  octx.fillText("전구 확률 " + Math.round(S.bulbP * 100) + "%", 24, H - 16 - 160 - 10);
 }
 
 /* ---------------- 메인 루프 ---------------- */
@@ -417,8 +602,10 @@ function loop() {
         S.hasMask = true; S.maskDirty = true;
       });
     }
+    stepBulb(now);
     frame++;
   }
+  stepReg(now);
   stepIntensity(now, dt);
 
   // 렌더
@@ -431,9 +618,9 @@ function loop() {
   const dark = +ui.dark.value;
   gl.uniform1f(U.uAspect, aspect);
   gl.uniform1f(U.uI, S.I);
-  gl.uniform1f(U.uAmb, Math.pow(1 - dark, 1.6));
+  gl.uniform1f(U.uAmb, RS.phase ? 0.85 : Math.pow(1 - dark, 1.6));
   gl.uniform1f(U.uShadow, +ui.shadow.value);
-  gl.uniform1f(U.uVirtual, ui.virtual.checked && (S.hasHand || ui.mode.value === "click") ? 1 : 0);
+  gl.uniform1f(U.uVirtual, ui.virtual.checked && ((S.hasHand && S.hasBulb) || ui.mode.value === "click") ? 1 : 0);
   gl.uniform1f(U.uR, S.R);
   gl.uniform1f(U.uHasMask, S.hasMask ? 1 : 0);
   gl.uniform1f(U.uDebug, ui.debug.checked ? 1 : 0);
@@ -455,9 +642,11 @@ function loop() {
 
 function updateStatus() {
   let msg;
-  if (!handLM) msg = "인식 모델 불러오는 중…";
+  if (!handLM || !embedder) msg = "인식 모델 불러오는 중…";
+  else if (RS.phase) msg = "전구 등록 중…";
+  else if (ui.mode.value !== "click" && !isRegistered()) msg = "먼저 <b>내 전구</b>를 등록해 주세요";
   else if (ui.mode.value === "click") msg = S.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
-  else if (!S.hasHand) msg = "전구를 들거나 주먹을 쥐어 카메라에 보여 주세요";
+  else if (!S.hasHand || !S.hasBulb) msg = "전구를 들어 카메라에 보여 주세요";
   else if (ui.mode.value === "raise" && !S.on) msg = "손을 위로 들어 올리면 켜져요";
   else msg = "<b>💡 켜짐</b>";
   statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
@@ -481,7 +670,17 @@ async function loadModels() {
     }),
   ]);
   handLM = h; segm = s;
-  updateStatus();
+  embedder = await mk(ImageEmbedder, {
+    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_small/float32/1/mobilenet_v3_small.tflite" },
+    runningMode: "IMAGE", l2Normalize: true, quantize: false,
+  });
+  // 저장된 등록 데이터가 다른 모델 크기면 버림
+  if (reg.pos.length) { const d = embedNowDim(); if (d && reg.pos[0].length !== d) { reg.pos = []; reg.neg = []; } }
+  refreshRegUI();
+}
+
+function embedNowDim() {
+  try { cctx.fillRect(0, 0, crop.width, crop.height); return embedder.embed(crop).embeddings[0].floatEmbedding.length; } catch (e) { return 0; }
 }
 
 function resize() {
@@ -503,7 +702,7 @@ $("start").addEventListener("click", async () => {
     statusEl.hidden = false; $("panel").hidden = false;
     if (innerWidth < 520) $("panel").open = false;
     requestAnimationFrame(loop);
-    updateStatus();
+    refreshRegUI();
     loadModels().catch(e => { console.error(e); statusEl.textContent = "인식 모델을 불러오지 못했어요. 새로고침해 주세요."; });
   } catch (e) {
     console.error(e);
