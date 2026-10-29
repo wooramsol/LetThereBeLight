@@ -96,8 +96,8 @@
     <p>웹캠 앞에서 전구를 들면 불이 들어오고,<br>손과 얼굴, 방까지 전구 빛으로 밝아져요.</p>
     <ul>
       <li>방 불을 조금 어둡게 하면 훨씬 진짜 같아요.</li>
-      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>빨간 점</b>을 그려 주세요. 그 점에 불이 켜져요.</li>
-      <li>빨간 점이 없는 빈손에는 반응하지 않아요.</li>
+      <li>전구 유리 가운데, 빛이 맺히길 원하는 자리에 <b>빨간 점과 그 위에 겹친 빨간 십자(+)</b>를 그려 주세요. 십자 가운데에 불이 켜져요.</li>
+      <li>십자 모양만 찾기 때문에 빈손이나 입술 같은 빨간 것에는 반응하지 않아요.</li>
       <li>영상은 내 기기 안에서만 처리되고 어디로도 전송되지 않아요.</li>
     </ul>
     <button class="primary" id="start">카메라 켜고 시작</button>
@@ -376,13 +376,14 @@ function updateHand(H, lms, now) {
 
 /* ---------------- 빨간 점 찾기 ---------------- */
 // 영상 한 프레임을 작게 한 번 복사해 두고, 손 주변만 읽어서 씀
-const frameC = document.createElement("canvas"); frameC.width = 640; frameC.height = 360;
+const FW = 960;   // 십자 모양을 보려면 해상도가 조금 더 필요함
+const frameC = document.createElement("canvas"); frameC.width = FW; frameC.height = 540;
 const fctx = frameC.getContext("2d", { willReadFrequently: true });
 let frameGrabbed = -1;
 function grabFrame() {
   if (frameGrabbed === frame) return;
   frameGrabbed = frame;
-  const fh = Math.round(640 / aspect); if (frameC.height !== fh) frameC.height = fh;
+  const fh = Math.round(FW / aspect); if (frameC.height !== fh) frameC.height = fh;
   fctx.drawImage(video, 0, 0, frameC.width, frameC.height);
 }
 // 점 색 (등록하면 내 점 색으로 바뀜). h: 색상(도), s: 채도 하한, v: 밝기 하한, tol: 색상 허용 범위
@@ -413,8 +414,29 @@ function dotSat(r, g, b) {
   return c.s >= dotColor.s && c.v >= dotColor.v && hueDist(c.h, dotColor.h) <= dotColor.tol ? c.s : 0;
 }
 let maskBuf = new Uint8Array(0), stackBuf = new Int32Array(0), satBuf = new Float32Array(0);
-// 손 주변에서 점 색 덩어리를 찾아 그 무게중심을 돌려줌 (화면 좌표, 거울 기준)
-function findDot(H) {
+let compBuf = new Int32Array(0);
+const NB = 32, binR = new Float32Array(NB);
+// 덩어리 모양이 십자(+)인지: 중심에서 각 방향으로 얼마나 뻗었는지 재서
+// 90도마다 반복되는 정도(십자) vs 180도마다 반복되는 정도(입술 같은 긴 타원)를 비교
+function crossness(pix, cnt, w, cxp, cyp) {
+  binR.fill(0);
+  for (let k = 0; k < cnt; k++) {
+    const j = pix[k], dx = (j % w) - cxp, dy = ((j / w) | 0) - cyp;
+    const r = Math.hypot(dx, dy) + 0.5;
+    const b = Math.min(NB - 1, Math.floor((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * NB));
+    if (r > binR[b]) binR[b] = r;
+  }
+  let m = 0, c2 = 0, s2 = 0, c4 = 0, s4 = 0;
+  for (let b = 0; b < NB; b++) {
+    const th = (b + 0.5) / NB * 2 * Math.PI, r = binR[b];
+    m += r; c2 += r * Math.cos(2 * th); s2 += r * Math.sin(2 * th); c4 += r * Math.cos(4 * th); s4 += r * Math.sin(4 * th);
+  }
+  m /= NB;
+  if (m < 1e-3) return { cross: 0, elong: 1, size: 0 };
+  return { cross: Math.hypot(c4, s4) / NB / m, elong: Math.hypot(c2, s2) / NB / m, size: m };
+}
+// 손 주변에서 빨간 십자를 찾아 그 가운데를 돌려줌 (화면 좌표, 거울 기준)
+function findDot(H, now) {
   grabFrame();
   const vw = frameC.width, vh = frameC.height;
   const r = 3.2 * H.Lp * vh;
@@ -426,12 +448,14 @@ function findDot(H) {
   if (w < 4 || h < 4) return null;
   const d = fctx.getImageData(x0, y0, w, h).data;
   const n = w * h;
-  if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); }
+  if (maskBuf.length < n) { maskBuf = new Uint8Array(n); stackBuf = new Int32Array(n); satBuf = new Float32Array(n); compBuf = new Int32Array(n); }
   const m = maskBuf, sat = satBuf;
   for (let i = 0; i < n; i++) { const v = dotSat(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); sat[i] = v; m[i] = v > 0 ? 1 : 0; }
-  // 덩어리(연결된 픽셀)마다 크기와 무게중심 계산
+  // 방금까지 따라가던 자리 (잠깐 흐려져서 십자 모양이 안 보여도 이 근처면 봐줌)
+  const locked = H.dot && now - H.dotSeen < 400;
   const prev = H.dot ? { x: (1 - H.dot.x) * vw - x0, y: H.dot.y * vh - y0 } : null;
-  const minArea = 3, maxArea = Math.max(60, (H.Lp * vh * 0.9) ** 2);
+  const near = H.Lp * vh * 0.45;
+  const minArea = 6, maxArea = Math.max(80, (H.Lp * vh * 1.2) ** 2);
   let best = null;
   for (let i = 0; i < n; i++) {
     if (m[i] !== 1) continue;
@@ -439,22 +463,25 @@ function findDot(H) {
     stackBuf[sp++] = i; m[i] = 2;
     while (sp) {
       const j = stackBuf[--sp], jx = j % w, jy = (j / w) | 0, wj = sat[j];
-      cnt++; sx += jx * wj; sy += jy * wj; ss += wj;
+      compBuf[cnt++] = j; sx += jx * wj; sy += jy * wj; ss += wj;
       if (jx > 0 && m[j - 1] === 1) { m[j - 1] = 2; stackBuf[sp++] = j - 1; }
       if (jx < w - 1 && m[j + 1] === 1) { m[j + 1] = 2; stackBuf[sp++] = j + 1; }
       if (jy > 0 && m[j - w] === 1) { m[j - w] = 2; stackBuf[sp++] = j - w; }
       if (jy < h - 1 && m[j + w] === 1) { m[j + w] = 2; stackBuf[sp++] = j + w; }
     }
     if (cnt < minArea || cnt > maxArea) continue;
-    const bx = sx / ss, by = sy / ss, ms = ss / cnt;
-    // 색이 진할수록(입술·피부처럼 흐린 빨강은 불리), 크게 보일수록, 손과 지난번 점에 가까울수록 좋음
-    let score = Math.sqrt(cnt) * ms * ms * ms * ms;
-    score -= Math.hypot(bx - (cx - x0), by - (cy - y0)) / (H.Lp * vh) * 0.8;
-    if (prev) score -= Math.hypot(bx - prev.x, by - prev.y) / (H.Lp * vh) * 4;
-    if (!best || score > best.score) best = { score, bx, by, cnt };
+    const bx = sx / ss, by = sy / ss;
+    const sh = crossness(compBuf, cnt, w, bx, by);
+    const isCross = sh.size >= 3 && sh.cross > 0.12 && sh.cross > sh.elong * 1.15;
+    const dPrev = prev ? Math.hypot(bx - prev.x, by - prev.y) : 1e9;
+    const keep = locked && dPrev < near && sh.elong < 0.35;    // 따라가던 십자가 잠깐 뭉개진 경우
+    if (!isCross && !keep) continue;
+    let score = (isCross ? 2 : 0) + sh.cross * 4 + Math.sqrt(cnt) * 0.05 - sh.elong;
+    if (prev) score -= dPrev / (H.Lp * vh) * 2;
+    if (!best || score > best.score) best = { score, bx, by, cnt, cross: sh.cross, elong: sh.elong, isCross };
   }
   if (!best) return null;
-  return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt };
+  return { x: 1 - (x0 + best.bx + 0.5) / vw, y: (y0 + best.by + 0.5) / vh, area: best.cnt, cross: best.cross, isCross: best.isCross };
 }
 
 /* ---------------- 점 색 맞추기 (선택) ---------------- */
@@ -543,11 +570,11 @@ const visibleHands = () => [...hands.values()].filter(H => H.seen);
 function stepFind(now) {
   if (RS.phase) { hands.forEach(H => { H.hasBulb = false; }); return; }
   for (const H of visibleHands()) {
-    const r = findDot(H);
+    const r = findDot(H, now);
     if (r) {
       if (!H.dot || now - H.dotSeen > 300) H.dot = { x: r.x, y: r.y };
       else { const k = 0.7; H.dot.x += (r.x - H.dot.x) * k; H.dot.y += (r.y - H.dot.y) * k; }
-      H.dotSeen = now; H.dotArea = r.area;
+      H.dotSeen = now; H.dotArea = r.area; H.dotCross = r.cross;
       H.dotHits = Math.min(H.dotHits + 1, 10);
       if (H.dotHits >= 2) H.hasBulb = true;
     } else {
@@ -624,7 +651,7 @@ function drawOverlay() {
       octx.beginPath(); octx.moveTo(fx - 12, fy); octx.lineTo(fx + 12, fy); octx.moveTo(fx, fy - 12); octx.lineTo(fx, fy + 12); octx.stroke();
       octx.fillStyle = "rgba(0,0,0,.6)"; octx.fillRect(fx + 14, fy - 12, 120, 24);
       octx.fillStyle = h.hasBulb ? "#ffc861" : "#ddd"; octx.font = "600 13px system-ui";
-      octx.fillText(h.hasBulb ? "점 찾음 · " + h.dotArea + "px" : "점 놓침", fx + 20, fy + 5);
+      octx.fillText(h.hasBulb ? "십자 찾음 · " + Math.round((h.dotCross || 0) * 100) : "놓침", fx + 20, fy + 5);
     }
   }
 }
@@ -717,7 +744,7 @@ function updateStatus() {
   else if (ui.mode.value === "click") msg = manual.on ? "<b>켜짐</b> · 클릭하거나 스페이스바로 끄기" : "클릭하거나 스페이스바를 눌러 켜기";
   else if (vis.some(H => H.on)) msg = "<b>💡 켜짐</b>";
   else if (ui.mode.value === "raise" && vis.some(H => H.hasBulb)) msg = "전구를 위로 들어 올리면 켜져요";
-  else msg = "빨간 점을 그린 전구를 들어 주세요";
+  else msg = "빨간 십자(+)를 그린 전구를 들어 주세요";
   statusEl.innerHTML = msg + (ui.debug.checked ? " · " + fps + "fps" : "");
 }
 
