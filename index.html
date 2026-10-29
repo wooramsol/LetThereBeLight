@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>bulb-light</title>
+<title>LetThereBeLight</title>
 <style>
   :root { --fg: #d8d8d8; --dim: #7a7a7a; --bg: #000; }
   * { box-sizing: border-box; }
@@ -250,7 +250,6 @@ function grabFrame() {
 }
 
 const dotColor = { h: 120, s: 0.22, v: 0.12, tol: 50 };   // green, hue 70..170
-try { localStorage.removeItem("bulb-light-dot-v1"); localStorage.removeItem("bulb-light-dot-preset"); } catch (e) {}
 
 function hsv(r, g, b) {
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
